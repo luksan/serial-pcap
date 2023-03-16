@@ -1,0 +1,13 @@
+[package]
+name = "serial-pcap"
+version = "0.1.0"
+authors = ["Lukas Sandström <lukas.sandstrom@chalmers.se>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.41"
+etherparse = { version = "0.13.0" }
+rpcap = "1.0.0"
+x328-proto = "0.1.2"
