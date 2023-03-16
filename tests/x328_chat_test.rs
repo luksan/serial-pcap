@@ -3,6 +3,8 @@ use std::io::Write;
 use anyhow::Result;
 use x328_proto::{addr, node, param, value, Master, NodeState};
 
+use serial_pcap::{SerialPacketWriter, UartTxChannel};
+
 pub struct Chat {
     master: Master,
     nodes: Vec<Node>,
@@ -67,4 +69,31 @@ impl Node {
             };
         }
     }
+}
+
+#[test]
+fn test_chatter() -> Result<()> {
+    let mut pcap = SerialPacketWriter::new("test.pcap")?;
+    let mut chat = Chat::new();
+
+    let mut buf_a = Vec::new();
+    let mut buf_b = Vec::new();
+
+    let mut cnt = 0;
+
+    while chat.next(&mut buf_a, &mut buf_b).is_ok() {
+        cnt += 1;
+        if !buf_a.is_empty() {
+            pcap.write_packet(buf_a.as_slice(), UartTxChannel::Ctrl)?;
+        }
+        if !buf_b.is_empty() {
+            pcap.write_packet(buf_b.as_slice(), UartTxChannel::Node)?;
+        }
+        buf_a.clear();
+        buf_b.clear();
+        if cnt > 10 {
+            break;
+        }
+    }
+    Ok(())
 }
