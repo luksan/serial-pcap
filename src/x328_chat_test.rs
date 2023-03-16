@@ -1,7 +1,7 @@
-use anyhow::Result;
-use std::convert::TryInto;
 use std::io::Write;
-use x328_proto::{node, Master, NodeState};
+
+use anyhow::Result;
+use x328_proto::{addr, node, param, value, Master, NodeState};
 
 pub struct Chat {
     master: Master,
@@ -24,7 +24,7 @@ impl Chat {
 
     pub fn next<T: Write>(&mut self, mut master_tx: T, mut client_tx: T) -> Result<()> {
         if self.read {
-            let send = self.master.read_parameter(21.try_into()?, 23.try_into()?);
+            let send = self.master.read_parameter(addr(21), param(23));
             master_tx.write_all(send.get_data())?;
             for node in &mut self.nodes {
                 node.next(send.get_data(), &mut client_tx)
@@ -32,7 +32,7 @@ impl Chat {
         } else {
             let send = self
                 .master
-                .write_parameter(31.try_into()?, 223.try_into()?, 442u16.into());
+                .write_parameter(addr(31), param(223), value(442));
             master_tx.write_all(send.get_data())?;
             for node in &mut self.nodes {
                 node.next(send.get_data(), &mut client_tx)
@@ -62,7 +62,7 @@ impl Node {
                     send.write_all(s.get_data()).expect("Write failed");
                     s.data_sent()
                 }
-                NodeState::ReadParameter(read) => read.send_reply_ok(33u16.into()),
+                NodeState::ReadParameter(read) => read.send_reply_ok(value(33)),
                 NodeState::WriteParameter(write) => write.write_ok(),
             };
         }
