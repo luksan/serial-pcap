@@ -37,6 +37,15 @@ impl SerialPacketWriter {
     }
 
     pub fn write_packet(&mut self, data: &[u8], channel: UartTxChannel) -> Result<()> {
+        self.write_packet_time(data, channel, std::time::SystemTime::now())
+    }
+
+    pub fn write_packet_time(
+        &mut self,
+        data: &[u8],
+        channel: UartTxChannel,
+        time: std::time::SystemTime,
+    ) -> Result<()> {
         let builder = if channel == UartTxChannel::Ctrl {
             PacketBuilder::ipv4([127, 0, 0, 1], [127, 0, 0, 2], 254).udp(422, 1422)
         } else {
@@ -46,7 +55,7 @@ impl SerialPacketWriter {
         builder.write(&mut buf, data)?;
         self.pcap_writer
             .write(&CapturedPacket {
-                time: std::time::SystemTime::now(),
+                time,
                 data: buf.as_slice(),
                 orig_len: buf.len(),
             })
