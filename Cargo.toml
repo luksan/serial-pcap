@@ -9,6 +9,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.41"
 arrayvec = "0.7.2"
+clap = { version = "4.1.8", features = ["derive", "wrap_help"]}
 etherparse = { version = "0.13.0" }
 rpcap = "1.0.0"
 x328-proto = "0.1.2"
