@@ -129,6 +129,7 @@ name = "serial-pcap"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "etherparse",
  "rpcap",
  "x328-proto",
