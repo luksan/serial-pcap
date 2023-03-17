@@ -46,11 +46,11 @@ impl SerialPacketWriter {
         channel: UartTxChannel,
         time: std::time::SystemTime,
     ) -> Result<()> {
-        let builder = if channel == UartTxChannel::Ctrl {
-            PacketBuilder::ipv4([127, 0, 0, 1], [127, 0, 0, 2], 254).udp(422, 1422)
-        } else {
-            PacketBuilder::ipv4([127, 0, 0, 2], [127, 0, 0, 1], 254).udp(422, 1422)
+        let (source_ip, dest_ip) = match channel {
+            UartTxChannel::Ctrl => ([127, 0, 0, 1], [127, 0, 0, 2]),
+            UartTxChannel::Node => ([127, 0, 0, 2], [127, 0, 0, 1]),
         };
+        let builder = PacketBuilder::ipv4(source_ip, dest_ip, 254).udp(422, 1422);
         let mut buf = ArrayVec::<u8, MAX_PACKET_LEN>::new();
         builder.write(&mut buf, data)?;
         self.pcap_writer
