@@ -109,9 +109,17 @@ async fn main() -> Result<()> {
     let node = open_uart(&args.node).await?;
 
     let (tx, rx) = unbounded_channel();
-    tokio::spawn(record_streams(pcap_writer, rx));
-    tokio::spawn(read_uart(node, UartTxChannel::Node, tx.clone()));
-    read_uart(ctrl, UartTxChannel::Ctrl, tx).await?;
+    let recorder = tokio::spawn(record_streams(pcap_writer, rx));
+    let node_reader = tokio::spawn(read_uart(node, UartTxChannel::Node, tx.clone()));
+    let ctrl_reader = tokio::spawn(read_uart(ctrl, UartTxChannel::Ctrl, tx));
+
+    ctrlc_async::set_async_handler(async move {
+        // Stop the recorder task by dropping all the channel tx handles
+        node_reader.abort();
+        ctrl_reader.abort();
+    })?;
+
+    recorder.await??;
 
     Ok(())
 }
