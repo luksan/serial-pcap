@@ -9,6 +9,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::timeout;
 use tokio_serial::{DataBits, Parity, SerialPort, SerialPortBuilderExt, SerialStream, StopBits};
+use tracing::{info, trace, Level};
 
 use serial_pcap::{SerialPacketWriter, UartTxChannel};
 
@@ -44,6 +45,7 @@ async fn read_uart(
                 bail!("Read from {} returned 0 bytes.", uart.name().unwrap())
             }
             Ok(_) => {
+                trace!("Received data from {ch_name:?}");
                 tx.send(UartData {
                     ch_name,
                     data: buf.split(),
@@ -73,13 +75,16 @@ async fn record_streams(
     let mut buf = BytesMut::new();
     let mut time = std::time::SystemTime::now();
     let read_timeout = Duration::from_millis(30);
+
+    trace!("Stream recorder running");
     loop {
         let msg = if !buf.is_empty() {
             let r = timeout(read_timeout, rx.recv()).await;
             if r.is_err() || matches!(r, Ok(Some(UartData{ch_name, ..})) if ch_name != prev_ch ) {
                 tokio::task::block_in_place(|| {
                     writer.write_packet_time(buf.as_ref(), prev_ch, time)
-                })?;
+                })
+                .context("write_packet_time() returned an error.")?;
                 buf = BytesMut::new();
             }
             match r {
@@ -90,7 +95,8 @@ async fn record_streams(
             rx.recv().await
         };
 
-        let Some(UartData{ch_name, data}) = msg else { return Ok(()) };
+        // destructure the received message, or stop if the tx side is closed
+        let Some(UartData{ch_name, data}) = msg else { return Ok(()); };
         if buf.is_empty() {
             time = std::time::SystemTime::now();
             prev_ch = ch_name;
@@ -104,6 +110,15 @@ async fn record_streams(
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = CmdlineOpts::parse();
+
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(Level::TRACE)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)?;
+
+    info!("Logging at INFO level.");
+    trace!("Logging at TRACE level.");
+
     let pcap_writer = SerialPacketWriter::new(args.pcap_file)?;
     let ctrl = open_uart(&args.ctrl).await?;
     let node = open_uart(&args.node).await?;
@@ -119,7 +134,10 @@ async fn main() -> Result<()> {
         ctrl_reader.abort();
     })?;
 
-    recorder.await??;
+    recorder
+        .await
+        .context("Error awaiting recorder join handle")?
+        .context("Error in packet recorder task.")?;
 
     Ok(())
 }
