@@ -25,7 +25,7 @@ function x328_proto.dissector(tvb, pinfo, tree)
 end
 
 function dissect_master(tvb, pinfo, tree)
-    tree:add(x328_proto.fields.address, tvb(2,3))
+    tree:add(x328_proto.fields.address, tvb(2,2))
     if tvb(5,1):uint() == 2 then -- write command
         local param = tree:add(x328_proto.fields.parameter, tvb(6,4))
         local value_len = 0
