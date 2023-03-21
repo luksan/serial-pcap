@@ -6,6 +6,7 @@ use arrayvec::ArrayVec;
 use etherparse::PacketBuilder;
 use rpcap::write::{PcapWriter, WriteOptions};
 use rpcap::CapturedPacket;
+use tokio_serial::{DataBits, Parity, SerialPortBuilderExt, SerialStream, StopBits};
 
 const LINKTYPE_IPV4: u32 = 228; // https://www.tcpdump.org/linktypes.html
 const MAX_PACKET_LEN: usize = 200; // the maximum size of a packet in the pcap file
@@ -68,4 +69,14 @@ impl SerialPacketWriter {
         }
         Ok(())
     }
+}
+
+/// Open a tokio_serial UART with the correct settings for X3.28
+pub fn open_async_uart(uart: &str) -> Result<SerialStream> {
+    tokio_serial::new(uart, 9600)
+        .parity(Parity::Even)
+        .data_bits(DataBits::Seven)
+        .stop_bits(StopBits::One)
+        .open_native_async()
+        .with_context(|| format!("Failed to open serial port {uart}."))
 }

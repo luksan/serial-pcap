@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tokio_serial::SerialStream;
 use x328_proto::{addr, node, param, value, Master, NodeState};
+
+use serial_pcap::open_async_uart;
 
 pub struct Chat {
     master: Master,
@@ -87,16 +89,10 @@ async fn chat(mut ctrl: SerialStream, mut node: SerialStream) -> Result<()> {
     Ok(())
 }
 
-fn open_serial(port: &str) -> Result<SerialStream> {
-    tokio_serial::new(port, 9600)
-        .open_native_async()
-        .context("Failed to open port {port}.")
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let ctrl_uart = open_serial("COM12")?;
-    let node_uart = open_serial("COM13")?;
+    let ctrl_uart = open_async_uart("COM12")?;
+    let node_uart = open_async_uart("COM13")?;
 
     chat(ctrl_uart, node_uart).await?;
 

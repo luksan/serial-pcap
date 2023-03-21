@@ -8,10 +8,10 @@ use clap::Parser;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::timeout;
-use tokio_serial::{DataBits, Parity, SerialPort, SerialPortBuilderExt, SerialStream, StopBits};
+use tokio_serial::{SerialPort, SerialStream};
 use tracing::{info, trace, Level};
 
-use serial_pcap::{SerialPacketWriter, UartTxChannel};
+use serial_pcap::{open_async_uart, SerialPacketWriter, UartTxChannel};
 
 #[derive(Parser, Debug)]
 struct CmdlineOpts {
@@ -56,15 +56,6 @@ async fn read_uart(
             }
         }
     }
-}
-
-async fn open_uart(uart: &str) -> Result<SerialStream> {
-    tokio_serial::new(uart, 9600)
-        .parity(Parity::Even)
-        .data_bits(DataBits::Seven)
-        .stop_bits(StopBits::One)
-        .open_native_async()
-        .with_context(|| format!("Failed to open serial port {uart}."))
 }
 
 async fn record_streams(
@@ -120,8 +111,8 @@ async fn main() -> Result<()> {
     trace!("Logging at TRACE level.");
 
     let pcap_writer = SerialPacketWriter::new(args.pcap_file)?;
-    let ctrl = open_uart(&args.ctrl).await?;
-    let node = open_uart(&args.node).await?;
+    let ctrl = open_async_uart(&args.ctrl)?;
+    let node = open_async_uart(&args.node)?;
 
     let (tx, rx) = unbounded_channel();
     let recorder = tokio::spawn(record_streams(pcap_writer, rx));
