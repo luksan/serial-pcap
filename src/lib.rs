@@ -50,15 +50,22 @@ impl SerialPacketWriter {
             UartTxChannel::Ctrl => ([127, 0, 0, 1], [127, 0, 0, 2]),
             UartTxChannel::Node => ([127, 0, 0, 2], [127, 0, 0, 1]),
         };
-        let builder = PacketBuilder::ipv4(source_ip, dest_ip, 254).udp(422, 1422);
-        let mut buf = ArrayVec::<u8, MAX_PACKET_LEN>::new();
-        builder.write(&mut buf, data)?;
-        self.pcap_writer
-            .write(&CapturedPacket {
-                time,
-                data: buf.as_slice(),
-                orig_len: buf.len(),
-            })
-            .context("Failed to write packet to pcap file")
+
+        for data in data.chunks(MAX_PACKET_LEN - 32) {
+            // 32 is the UDP header length
+            let builder = PacketBuilder::ipv4(source_ip, dest_ip, 254).udp(422, 1422);
+            let mut buf = ArrayVec::<u8, MAX_PACKET_LEN>::new();
+            builder
+                .write(&mut buf, data)
+                .context("Writing to packet memory buffer failed.")?;
+            self.pcap_writer
+                .write(&CapturedPacket {
+                    time,
+                    data: buf.as_slice(),
+                    orig_len: buf.len(),
+                })
+                .context("Failed to write packet to pcap file")?;
+        }
+        Ok(())
     }
 }
