@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use clap::Parser;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_serial::{SerialPort, SerialStream};
 use tracing::{info, trace, Level};
@@ -98,6 +99,14 @@ async fn record_streams(
     }
 }
 
+async fn await_task<E: Into<anyhow::Error>>(handle: &mut JoinHandle<Result<(), E>>) -> Result<()> {
+    match handle.await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(err)) => bail!(err),
+        Err(err) => bail!(err),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = CmdlineOpts::parse();
@@ -115,20 +124,31 @@ async fn main() -> Result<()> {
     let node = open_async_uart(&args.node)?;
 
     let (tx, rx) = unbounded_channel();
-    let recorder = tokio::spawn(record_streams(pcap_writer, rx));
-    let node_reader = tokio::spawn(read_uart(node, UartTxChannel::Node, tx.clone()));
-    let ctrl_reader = tokio::spawn(read_uart(ctrl, UartTxChannel::Ctrl, tx));
+    let mut recorder = tokio::spawn(record_streams(pcap_writer, rx));
+    let mut node_reader = tokio::spawn(read_uart(node, UartTxChannel::Node, tx.clone()));
+    let mut ctrl_reader = tokio::spawn(read_uart(ctrl, UartTxChannel::Ctrl, tx));
 
-    ctrlc_async::set_async_handler(async move {
-        // Stop the recorder task by dropping all the channel tx handles
-        node_reader.abort();
-        ctrl_reader.abort();
-    })?;
+    let res;
+    tokio::select! {
+    r = await_task(&mut recorder) => {res = r;}
+    r = await_task(&mut node_reader) => {res = r}
+    r = await_task(&mut ctrl_reader) => {res = r}
+    _ = tokio::signal::ctrl_c() => { res = Ok(()) }
+    }
 
-    recorder
-        .await
-        .context("Error awaiting recorder join handle")?
-        .context("Error in packet recorder task.")?;
+    info!("Waiting for the recorder to stop.");
 
-    Ok(())
+    // Stop the recorder task by dropping all the channel tx handles
+    node_reader.abort();
+    ctrl_reader.abort();
+    if !node_reader.is_finished() {
+        let _ = node_reader.await;
+    }
+    if !ctrl_reader.is_finished() {
+        let _ = ctrl_reader.await;
+    }
+    await_task(&mut recorder).await?;
+
+    info!("Shutdown complete.");
+    res
 }
