@@ -47,14 +47,14 @@ impl SerialPacketWriter {
         channel: UartTxChannel,
         time: std::time::SystemTime,
     ) -> Result<()> {
-        let (source_ip, dest_ip) = match channel {
-            UartTxChannel::Ctrl => ([127, 0, 0, 1], [127, 0, 0, 2]),
-            UartTxChannel::Node => ([127, 0, 0, 2], [127, 0, 0, 1]),
+        let (ip, ports) = match channel {
+            UartTxChannel::Ctrl => (([127, 0, 0, 1], [127, 0, 0, 2]), (422, 1442)),
+            UartTxChannel::Node => (([127, 0, 0, 2], [127, 0, 0, 1]), (1442, 422)),
         };
 
         for data in data.chunks(MAX_PACKET_LEN - 32) {
             // 32 is the UDP header length
-            let builder = PacketBuilder::ipv4(source_ip, dest_ip, 254).udp(422, 1422);
+            let builder = PacketBuilder::ipv4(ip.0, ip.1, 254).udp(ports.0, ports.1);
             let mut buf = ArrayVec::<u8, MAX_PACKET_LEN>::new();
             builder
                 .write(&mut buf, data)
