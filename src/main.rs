@@ -9,7 +9,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use tokio_serial::{SerialPort, SerialStream};
+use tokio_serial::SerialStream;
 use tracing::{info, trace, Level};
 
 use serial_pcap::{open_async_uart, SerialPacketWriter, UartTxChannel};
@@ -33,6 +33,7 @@ struct UartData {
     data: BytesMut,
 }
 
+#[tracing::instrument(skip(uart, tx))]
 async fn read_uart(
     mut uart: SerialStream,
     ch_name: UartTxChannel,
@@ -43,22 +44,25 @@ async fn read_uart(
         buf.reserve(20);
         match uart.read_buf(&mut buf).await {
             Ok(0) => {
-                bail!("Read from {} returned 0 bytes.", uart.name().unwrap())
+                info!("Zero length read");
+                bail!("Read from {ch_name:?} returned 0 bytes.");
             }
-            Ok(_) => {
-                trace!("Received data from {ch_name:?}");
+            Ok(len) => {
+                trace!("Received {len} bytes.");
                 tx.send(UartData {
                     ch_name,
                     data: buf.split(),
                 })?;
             }
             err => {
-                err?;
+                info!("UART read returned with error {err:?}");
+                err.with_context(|| format!("Read error from UART '{ch_name:?}'."))?;
             }
         }
     }
 }
 
+#[tracing::instrument(skip_all)]
 async fn record_streams(
     mut writer: SerialPacketWriter,
     mut rx: UnboundedReceiver<UartData>,
@@ -125,30 +129,20 @@ async fn main() -> Result<()> {
 
     let (tx, rx) = unbounded_channel();
     let mut recorder = tokio::spawn(record_streams(pcap_writer, rx));
-    let mut node_reader = tokio::spawn(read_uart(node, UartTxChannel::Node, tx.clone()));
-    let mut ctrl_reader = tokio::spawn(read_uart(ctrl, UartTxChannel::Ctrl, tx));
 
     let res;
     tokio::select! {
-    r = await_task(&mut recorder) => {res = r;}
-    r = await_task(&mut node_reader) => {res = r}
-    r = await_task(&mut ctrl_reader) => {res = r}
-    _ = tokio::signal::ctrl_c() => { res = Ok(()) }
+        r = await_task(&mut recorder) => { return r.context("Error in stream recorder task."); }
+        r = read_uart(ctrl, UartTxChannel::Ctrl, tx.clone()) => {res = r;}
+        r = read_uart(node, UartTxChannel::Node, tx) => {res = r;}
+        _ = tokio::signal::ctrl_c() => { res = Ok(()) }
     }
 
     info!("Waiting for the recorder to stop.");
 
     // Stop the recorder task by dropping all the channel tx handles
-    node_reader.abort();
-    ctrl_reader.abort();
-    if !node_reader.is_finished() {
-        let _ = node_reader.await;
-    }
-    if !ctrl_reader.is_finished() {
-        let _ = ctrl_reader.await;
-    }
     await_task(&mut recorder).await?;
 
     info!("Shutdown complete.");
-    res
+    res.context("Error returned from main()")
 }
