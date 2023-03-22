@@ -10,9 +10,8 @@ use x328_proto::{addr, master, node, param, value, Master, NodeState, Value};
 
 use serial_pcap::open_async_uart;
 
-pub struct BusController<S: Iterator<Item = Cmd>> {
+pub struct BusController {
     master: Master,
-    scenario: S,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -21,33 +20,31 @@ pub enum Cmd {
     W(u8, i16, i32),
 }
 
-impl<S: Iterator<Item = Cmd>> BusController<S> {
-    pub fn new(scenario: S) -> Self {
+impl BusController {
+    pub fn new() -> Self {
         BusController {
             master: Master::new(),
-            scenario,
         }
     }
 
-    pub async fn next(&mut self, uart: &mut SerialStream) -> Result<Option<Value>> {
-        match self.scenario.next() {
-            None => return Ok(None),
-            Some(Cmd::R(a, p)) => {
+    pub async fn next(&mut self, cmd: Cmd, uart: &mut SerialStream) -> Result<Value> {
+        match cmd {
+            Cmd::R(a, p) => {
                 let read = self.master.read_parameter(addr(a), param(p));
                 match Self::master_trx(read, uart).await? {
-                    Ok(r) => return Ok(Some(r)),
+                    Ok(r) => return Ok(r),
                     Err(e) => println!("Error in response: {e:?}"),
                 }
             }
-            Some(Cmd::W(a, p, v)) => {
+            Cmd::W(a, p, v) => {
                 let write = self.master.write_parameter(addr(a), param(p), value(v));
                 match Self::master_trx(write, uart).await? {
-                    Ok(_) => return Ok(Some(value(1))),
+                    Ok(_) => return Ok(value(1)),
                     Err(e) => println!("Error in response: {e:?}"),
                 }
             }
         }
-        Ok(Some(value(0)))
+        Ok(value(0))
     }
 
     // this doesn't take `self` since send is borrowed from self.master
@@ -121,26 +118,27 @@ async fn nodes_chat(mut uart: SerialStream, mut nodes: Vec<Node>) -> Result<()> 
 
 async fn chat(mut ctrl: SerialStream, node: SerialStream) -> Result<()> {
     let scenario = vec![Cmd::R(21, 23), Cmd::W(31, 223, 442)];
+    let scenario = scenario.iter().cycle().take(10).copied();
 
-    let mut chat = BusController::new(scenario.iter().cycle().take(10).copied());
+    let mut chat = BusController::new();
 
     let nodes = vec![Node::new(21), Node::new(31)];
     let node_handle = tokio::spawn(nodes_chat(node, nodes));
 
-    loop {
-        match chat.next(&mut ctrl).await? {
-            Some(_value) => {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                if node_handle.is_finished() {
-                    return node_handle
-                        .await
-                        .context("Error in node task join handle.")?
-                        .context("Node task terminated unexpectedly");
-                }
-            }
-            None => return Ok(()),
+    for cmd in scenario {
+        let _value = chat.next(cmd, &mut ctrl).await?;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if node_handle.is_finished() {
+            return node_handle
+                .await
+                .context("Error in node task join handle.")?
+                .context("Node task terminated unexpectedly");
         }
     }
+    // Stop the node UART reader
+    node_handle.abort();
+    let _ = node_handle.await;
+    Ok(())
 }
 
 #[tokio::main]
