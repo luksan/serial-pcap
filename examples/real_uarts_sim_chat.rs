@@ -1,51 +1,79 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
-use tokio::io::AsyncWriteExt;
+use bytes::BytesMut;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::timeout;
 use tokio_serial::SerialStream;
-use x328_proto::{addr, node, param, value, Master, NodeState};
+use x328_proto::master::{ReceiveDataProgress, Receiver};
+use x328_proto::{addr, master, node, param, value, Master, NodeState, Value};
 
 use serial_pcap::open_async_uart;
 
-pub struct Chat {
+pub struct BusController<S: Iterator<Item = Cmd>> {
     master: Master,
-    nodes: Vec<Node>,
-    read: bool,
+    scenario: S,
 }
 
-fn new_node(address: usize) -> Node {
-    Node::new(address)
+#[derive(Copy, Clone, Debug)]
+pub enum Cmd {
+    R(u8, i16),
+    W(u8, i16, i32),
 }
 
-impl Chat {
-    pub fn new() -> Self {
-        Chat {
+impl<S: Iterator<Item = Cmd>> BusController<S> {
+    pub fn new(scenario: S) -> Self {
+        BusController {
             master: Master::new(),
-            nodes: vec![new_node(21), new_node(31)],
-            read: true,
+            scenario,
         }
     }
 
-    pub async fn next(
-        &mut self,
-        master_tx: &mut SerialStream,
-        client_tx: &mut SerialStream,
-    ) -> Result<()> {
-        if self.read {
-            let send = self.master.read_parameter(addr(21), param(23));
-            master_tx.write_all(send.get_data()).await?;
-            for node in &mut self.nodes {
-                node.next(send.get_data(), client_tx).await;
+    pub async fn next(&mut self, uart: &mut SerialStream) -> Result<Option<Value>> {
+        match self.scenario.next() {
+            None => return Ok(None),
+            Some(Cmd::R(a, p)) => {
+                let read = self.master.read_parameter(addr(a), param(p));
+                match Self::master_trx(read, uart).await? {
+                    Ok(r) => return Ok(Some(r)),
+                    Err(e) => println!("Error in response: {e:?}"),
+                }
             }
-        } else {
-            let send = self
-                .master
-                .write_parameter(addr(31), param(223), value(442));
-            master_tx.write_all(send.get_data()).await?;
-            for node in &mut self.nodes {
-                node.next(send.get_data(), client_tx).await;
+            Some(Cmd::W(a, p, v)) => {
+                let write = self.master.write_parameter(addr(a), param(p), value(v));
+                match Self::master_trx(write, uart).await? {
+                    Ok(_) => return Ok(Some(value(1))),
+                    Err(e) => println!("Error in response: {e:?}"),
+                }
             }
         }
-        self.read = !self.read;
-        Ok(())
+        Ok(Some(value(0)))
+    }
+
+    // this doesn't take `self` since send is borrowed from self.master
+    async fn master_trx<Rec: Receiver<R>, R>(
+        send: master::SendData<'_, Rec, R>,
+        uart: &mut SerialStream,
+    ) -> Result<R> {
+        uart.write_all(send.get_data())
+            .await
+            .context("Ctrl UART write failed")?;
+
+        let mut sent = send.data_sent();
+        let mut buf = BytesMut::with_capacity(40);
+        loop {
+            buf.clear();
+            timeout(Duration::from_millis(500), uart.read_buf(&mut buf))
+                .await
+                .context("Ctrl UART read timeout")?
+                .context("Ctrl UART read error")?;
+            match sent.receive_data(buf.as_ref()) {
+                ReceiveDataProgress::Done(r) => return Ok(r),
+                ReceiveDataProgress::NeedData(s) => {
+                    sent = s;
+                }
+            }
+        }
     }
 }
 
@@ -56,16 +84,18 @@ impl Node {
         Self(node::ReceiveData::new(address).ok())
     }
 
-    async fn next(&mut self, recv: &[u8], send: &mut SerialStream) {
+    async fn next(&mut self, recv: &[u8], send: &mut SerialStream) -> Result<()> {
         let mut state = self.0.take().unwrap().receive_data(recv);
         loop {
             state = match state {
                 NodeState::ReceiveData(r) => {
                     self.0 = r.into();
-                    return;
+                    return Ok(());
                 }
                 NodeState::SendData(mut s) => {
-                    send.write_all(s.get_data()).await.expect("Write failed");
+                    send.write_all(s.get_data())
+                        .await
+                        .context("Node UART write failed")?;
                     s.data_sent()
                 }
                 NodeState::ReadParameter(read) => read.send_reply_ok(value(33)),
@@ -75,18 +105,42 @@ impl Node {
     }
 }
 
-async fn chat(mut ctrl: SerialStream, mut node: SerialStream) -> Result<()> {
-    let mut chat = Chat::new();
+async fn nodes_chat(mut uart: SerialStream, mut nodes: Vec<Node>) -> Result<()> {
+    let mut buf = BytesMut::with_capacity(40);
+    loop {
+        buf.clear();
+        uart.read_buf(&mut buf)
+            .await
+            .context("Node UART read failed")?;
 
-    let mut cnt = 0;
-
-    while chat.next(&mut ctrl, &mut node).await.is_ok() {
-        cnt += 1;
-        if cnt > 10 {
-            break;
+        for node in nodes.iter_mut() {
+            node.next(buf.as_ref(), &mut uart).await?;
         }
     }
-    Ok(())
+}
+
+async fn chat(mut ctrl: SerialStream, node: SerialStream) -> Result<()> {
+    let scenario = vec![Cmd::R(21, 23), Cmd::W(31, 223, 442)];
+
+    let mut chat = BusController::new(scenario.iter().cycle().take(10).copied());
+
+    let nodes = vec![Node::new(21), Node::new(31)];
+    let node_handle = tokio::spawn(nodes_chat(node, nodes));
+
+    loop {
+        match chat.next(&mut ctrl).await? {
+            Some(_value) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if node_handle.is_finished() {
+                    return node_handle
+                        .await
+                        .context("Error in node task join handle.")?
+                        .context("Node task terminated unexpectedly");
+                }
+            }
+            None => return Ok(()),
+        }
+    }
 }
 
 #[tokio::main]
