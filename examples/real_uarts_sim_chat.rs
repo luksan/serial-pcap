@@ -123,7 +123,7 @@ async fn chat(mut ctrl: SerialStream, node: SerialStream) -> Result<()> {
     let mut chat = BusController::new();
 
     let nodes = vec![Node::new(21), Node::new(31)];
-    let node_handle = tokio::spawn(nodes_chat(node, nodes));
+    let node_handle: abort_on_drop::ChildTask<_> = tokio::spawn(nodes_chat(node, nodes)).into();
 
     for cmd in scenario {
         let _value = chat.next(cmd, &mut ctrl).await?;
