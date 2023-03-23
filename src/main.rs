@@ -63,8 +63,8 @@ async fn read_uart(
 }
 
 #[tracing::instrument(skip_all)]
-async fn record_streams(
-    mut writer: SerialPacketWriter,
+async fn record_streams<W: std::io::Write>(
+    mut writer: SerialPacketWriter<W>,
     mut rx: UnboundedReceiver<UartData>,
 ) -> Result<()> {
     let mut prev_ch = UartTxChannel::Node;
@@ -123,7 +123,7 @@ async fn main() -> Result<()> {
     info!("Logging at INFO level.");
     trace!("Logging at TRACE level.");
 
-    let pcap_writer = SerialPacketWriter::new(args.pcap_file)?;
+    let pcap_writer = SerialPacketWriter::new_file(args.pcap_file)?;
     let ctrl = open_async_uart(&args.ctrl)?;
     let node = open_async_uart(&args.node)?;
 

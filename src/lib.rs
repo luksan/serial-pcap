@@ -11,8 +11,8 @@ use tokio_serial::{DataBits, Parity, SerialPortBuilderExt, SerialStream, StopBit
 const LINKTYPE_IPV4: u32 = 228; // https://www.tcpdump.org/linktypes.html
 const MAX_PACKET_LEN: usize = 200; // the maximum size of a packet in the pcap file
 
-pub struct SerialPacketWriter {
-    pcap_writer: PcapWriter<File>,
+pub struct SerialPacketWriter<W: std::io::Write> {
+    pcap_writer: PcapWriter<W>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -21,11 +21,18 @@ pub enum UartTxChannel {
     Node,
 }
 
-impl SerialPacketWriter {
-    pub fn new(filename: impl AsRef<Path>) -> Result<Self> {
+impl SerialPacketWriter<File> {
+    pub fn new_file(filename: impl AsRef<Path>) -> Result<Self> {
         let filename = filename.as_ref();
+        let writer = File::create(filename).context("Failed to create pcap file {filename}")?;
+        SerialPacketWriter::<File>::new(writer)
+    }
+}
+
+impl<W: std::io::Write> SerialPacketWriter<W> {
+    pub fn new(writer: W) -> Result<Self> {
         let pcap_writer = PcapWriter::new(
-            File::create(filename).context("Failed to create pcap file {filename}")?,
+            writer,
             WriteOptions {
                 snaplen: MAX_PACKET_LEN, // maximum packet size in file
                 linktype: LINKTYPE_IPV4,

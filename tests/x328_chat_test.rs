@@ -73,7 +73,7 @@ impl Node {
 
 #[test]
 fn test_chatter() -> Result<()> {
-    let mut pcap = SerialPacketWriter::new("test.pcap")?;
+    let mut pcap = SerialPacketWriter::new_file("test.pcap")?;
     let mut chat = Chat::new();
 
     let mut buf_a = Vec::new();
