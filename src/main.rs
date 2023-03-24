@@ -1,14 +1,11 @@
 #![allow(dead_code)]
 
-use std::time::Duration;
-
 use anyhow::{bail, Context, Result};
 use bytes::BytesMut;
 use clap::Parser;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
 use tokio_serial::SerialStream;
 use tracing::{info, trace, Level};
 
@@ -31,6 +28,7 @@ struct CmdlineOpts {
 struct UartData {
     ch_name: UartTxChannel,
     data: BytesMut,
+    time_received: std::time::SystemTime,
 }
 
 #[tracing::instrument(skip(uart, tx))]
@@ -52,6 +50,7 @@ async fn read_uart(
                 tx.send(UartData {
                     ch_name,
                     data: buf.split(),
+                    time_received: std::time::SystemTime::now(),
                 })?;
             }
             err => {
@@ -67,39 +66,13 @@ async fn record_streams<W: std::io::Write>(
     mut writer: SerialPacketWriter<W>,
     mut rx: UnboundedReceiver<UartData>,
 ) -> Result<()> {
-    let mut prev_ch = UartTxChannel::Node;
-    let mut buf = BytesMut::new();
-    let mut time = std::time::SystemTime::now();
-    let read_timeout = Duration::from_millis(30);
-
     trace!("Stream recorder running");
     loop {
-        let msg = if !buf.is_empty() {
-            let r = timeout(read_timeout, rx.recv()).await;
-            if r.is_err() || matches!(r, Ok(Some(UartData{ch_name, ..})) if ch_name != prev_ch ) {
-                tokio::task::block_in_place(|| {
-                    writer.write_packet_time(buf.as_ref(), prev_ch, time)
-                })
-                .context("write_packet_time() returned an error.")?;
-                buf = BytesMut::new();
-            }
-            match r {
-                Ok(msg) => msg,
-                Err(_) => continue,
-            }
-        } else {
-            rx.recv().await
-        };
-
-        // destructure the received message, or stop if the tx side is closed
-        let Some(UartData{ch_name, data}) = msg else { return Ok(()); };
-        if buf.is_empty() {
-            time = std::time::SystemTime::now();
-            prev_ch = ch_name;
-            buf = data;
-        } else {
-            buf.unsplit(data);
-        }
+        let Some(UartData{ch_name, data, time_received}) = rx.recv().await else { return Ok(()); };
+        tokio::task::block_in_place(|| {
+            writer.write_packet_time(data.as_ref(), ch_name, time_received)
+        })
+        .context("write_packet_time() returned an error.")?;
     }
 }
 
