@@ -1,9 +1,9 @@
-use std::io::Write;
+use std::io::{Read, Write};
 
 use anyhow::Result;
 use x328_proto::{addr, node, param, value, Master, NodeState};
 
-use serial_pcap::{SerialPacketWriter, UartTxChannel};
+use serial_pcap::{SerialPacketReader, SerialPacketWriter, UartTxChannel};
 
 pub struct Chat {
     master: Master,
@@ -73,7 +73,16 @@ impl Node {
 
 #[test]
 fn test_chatter() -> Result<()> {
-    let mut pcap = SerialPacketWriter::new_file("test.pcap")?;
+    let filename = "test.pcap";
+
+    test_chatter_write(std::fs::File::create(filename)?)?;
+    test_chatter_read(std::fs::File::open(filename)?)?;
+
+    Ok(())
+}
+
+fn test_chatter_write(writer: impl std::io::Write) -> Result<()> {
+    let mut pcap = SerialPacketWriter::new(writer)?;
     let mut chat = Chat::new();
 
     let mut buf_a = Vec::new();
@@ -95,5 +104,16 @@ fn test_chatter() -> Result<()> {
             break;
         }
     }
+    Ok(())
+}
+
+fn test_chatter_read(reader: impl std::io::Read) -> Result<()> {
+    let mut pcap = SerialPacketReader::new(reader)?;
+    let mut buf = vec![];
+    pcap.reader(UartTxChannel::Ctrl).read_to_end(&mut buf)?;
+    assert!(buf.len() > 0);
+    buf.clear();
+    pcap.reader(UartTxChannel::Node).read_to_end(&mut buf)?;
+    assert!(buf.len() > 0);
     Ok(())
 }

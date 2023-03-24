@@ -1,9 +1,11 @@
 use std::fs::File;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use arrayvec::ArrayVec;
-use etherparse::PacketBuilder;
+use bytes::{Buf, BytesMut};
+use etherparse::{PacketBuilder, SlicedPacket, TransportSlice};
+use rpcap::read::PcapReader;
 use rpcap::write::{PcapWriter, WriteOptions};
 use rpcap::CapturedPacket;
 use tokio_serial::{DataBits, Parity, SerialPortBuilderExt, SerialStream, StopBits};
@@ -75,6 +77,86 @@ impl<W: std::io::Write> SerialPacketWriter<W> {
                 .context("Failed to write packet to pcap file")?;
         }
         Ok(())
+    }
+}
+
+pub struct SerialPacketReader<R: std::io::Read> {
+    pcap_reader: PcapReader<R>,
+    ctrl_buf: BytesMut,
+    node_buf: BytesMut,
+}
+
+impl<R: std::io::Read> SerialPacketReader<R> {
+    pub fn new(reader: R) -> Result<Self> {
+        Ok(Self {
+            pcap_reader: PcapReader::new(reader)
+                .context("Failed to create PcapReader.")?
+                .1,
+            ctrl_buf: Default::default(),
+            node_buf: Default::default(),
+        })
+    }
+
+    pub fn read_bytes(&mut self, ch: UartTxChannel, max_len: usize) -> Result<BytesMut> {
+        if self.get_buffer(ch).is_empty() {
+            self.fill_buffer(ch)?;
+        }
+        let buf = self.get_buffer(ch);
+        let len = max_len.min(buf.len());
+        Ok(buf.split_to(len))
+    }
+
+    pub fn reader(&mut self, ch: UartTxChannel) -> impl std::io::Read + '_ {
+        ReadPcapReadImpl { reader: self, ch }
+    }
+
+    fn get_buffer(&mut self, ch: UartTxChannel) -> &mut BytesMut {
+        match ch {
+            UartTxChannel::Ctrl => &mut self.ctrl_buf,
+            UartTxChannel::Node => &mut self.node_buf,
+        }
+    }
+
+    fn fill_buffer(&mut self, ch: UartTxChannel) -> Result<()> {
+        while self.get_buffer(ch).is_empty() && self.next_packet()? {}
+        Ok(())
+    }
+
+    fn next_packet(&mut self) -> Result<bool> {
+        let Some(pkt) = self.pcap_reader.next().context("Pcap read error")? else { return Ok(false) };
+        assert_eq!(pkt.orig_len, pkt.data.len());
+        let pkt = SlicedPacket::from_ip(pkt.data).context("Failed to slice packet")?;
+        let Some(TransportSlice::Udp(udp_hdr)) = pkt.transport else { bail!("Failed to find UDP header in pkt.")};
+        let source_port = udp_hdr.source_port();
+        let buf = match source_port {
+            422 => &mut self.ctrl_buf,
+            1422 => &mut self.node_buf,
+            1442 => &mut self.node_buf, // anyhow...
+            _ => bail!("Incorrect UDP source port {source_port}."),
+        };
+        buf.extend_from_slice(pkt.payload);
+        Ok(true)
+    }
+}
+
+impl SerialPacketReader<File> {
+    pub fn from_file(filename: impl AsRef<Path>) -> Result<Self> {
+        let filename = filename.as_ref();
+        Self::new(File::open(filename).context("Failed to open {filename}")?)
+    }
+}
+
+struct ReadPcapReadImpl<'a, R: std::io::Read> {
+    reader: &'a mut SerialPacketReader<R>,
+    ch: UartTxChannel,
+}
+
+impl<R: std::io::Read> std::io::Read for ReadPcapReadImpl<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Err(e) = self.reader.fill_buffer(self.ch) {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+        }
+        self.reader.get_buffer(self.ch).reader().read(buf)
     }
 }
 
