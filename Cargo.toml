@@ -18,4 +18,4 @@ tokio = { version = "1.21.0", features = ["full"] }
 tokio-serial = "5.4.4"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
-x328-proto = "0.1.2"
+x328-proto = { path = "../rust-x328-proto" }
