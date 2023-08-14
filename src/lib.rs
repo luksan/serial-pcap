@@ -84,6 +84,7 @@ pub struct SerialPacketReader<R: std::io::Read> {
     pcap_reader: PcapReader<R>,
     ctrl_buf: BytesMut,
     node_buf: BytesMut,
+    pub stream_time: std::time::SystemTime,
 }
 
 impl<R: std::io::Read> SerialPacketReader<R> {
@@ -94,6 +95,7 @@ impl<R: std::io::Read> SerialPacketReader<R> {
                 .1,
             ctrl_buf: Default::default(),
             node_buf: Default::default(),
+            stream_time: std::time::SystemTime::now(),
         })
     }
 
@@ -124,6 +126,7 @@ impl<R: std::io::Read> SerialPacketReader<R> {
 
     fn next_packet(&mut self) -> Result<bool> {
         let Some(pkt) = self.pcap_reader.next().context("Pcap read error")? else { return Ok(false) };
+        self.stream_time = pkt.time;
         assert_eq!(pkt.orig_len, pkt.data.len());
         let pkt = SlicedPacket::from_ip(pkt.data).context("Failed to slice packet")?;
         let Some(TransportSlice::Udp(udp_hdr)) = pkt.transport else { bail!("Failed to find UDP header in pkt.")};

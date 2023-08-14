@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use clap::Parser;
+
 use x328_proto::master::Error::ProtocolError;
 use x328_proto::master::SendData;
 use x328_proto::node::Node;
@@ -43,7 +45,12 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                     ctrl.read_parameter(r.address(), r.parameter()),
                     uart_reader,
                 );
-                println!("Read {:?}@{:?} => {resp:?}", r.parameter(), r.address());
+                println!(
+                    "{:?} Read {:?}@{:?} => {resp:?}",
+                    DateTime::<Utc>::from(uart_reader.stream_time),
+                    r.parameter(),
+                    r.address()
+                );
                 token = r.send_reply_ok(resp?);
             }
             NodeState::WriteParameter(w) => {
@@ -52,7 +59,8 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                     uart_reader,
                 );
                 println!(
-                    "Write {:?} to {:?}@{:?} => {resp:?}",
+                    "{:?} Write {:?} to {:?}@{:?} => {resp:?}",
+                    DateTime::<Utc>::from(uart_reader.stream_time),
                     w.value(),
                     w.parameter(),
                     w.address()
