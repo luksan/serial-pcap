@@ -7,7 +7,7 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicU32, Ordering};
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::PrimitiveStyle;
-use rp_rs422_cap::picodisplay::{self, PicoDisplay};
+use rp_rs422_cap::picodisplay::{self, Buttons, PicoDisplay};
 
 // USB Device support
 use usb_device::{class_prelude::*, prelude::*};
@@ -45,7 +45,7 @@ mod app {
     use panic_probe as _;
     use rp2040_hal::clocks::ClockSource;
     use rp2040_hal::gpio::FunctionSpi;
-    use rp_rs422_cap::create_picodisplay;
+    use rp_rs422_cap::{create_picodisplay, make_buttons};
 
     const MONO_NUM: u32 = 1;
     const MONO_DENOM: u32 = 1000000;
@@ -62,6 +62,7 @@ mod app {
 
     #[local]
     struct Local {
+        buttons: Buttons,
         led: gpio::Pin<Gpio25, PushPullOutput>,
         picodisplay: PicoDisplay,
         usb_device: UsbDevice<'static, hal::usb::UsbBus>,
@@ -111,10 +112,10 @@ mod app {
         rgb.set_brightness(50);
         rgb.set_color(Rgb888::GREEN);
 
-        let mut picodisplay = create_picodisplay!(rp_pins, pac, delay, pwm_rg, pwm_b);
+        let picodisplay = create_picodisplay!(rp_pins, pac, delay);
 
-        picodisplay
-            .buttons
+        let mut buttons = make_buttons!(rp_pins);
+        buttons
             .a
             .set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
 
@@ -154,6 +155,7 @@ mod app {
                 usb_serial2,
             },
             Local {
+                buttons,
                 led,
                 usb_device,
                 picodisplay,
@@ -197,9 +199,13 @@ mod app {
         });
     }
 
-    #[task(binds = IO_IRQ_BANK0, priority = 1)]
+    #[task(binds = IO_IRQ_BANK0, priority = 1, local = [buttons])]
     fn button_irq(ctx: button_irq::Context) {
         use core::sync::atomic::Ordering;
+        ctx.local
+            .buttons
+            .a
+            .clear_interrupt(gpio::Interrupt::EdgeLow);
         let x = BTN_CTR.load(Ordering::Relaxed);
         BTN_CTR.store(x + 1, Ordering::Relaxed);
     }

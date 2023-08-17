@@ -38,17 +38,20 @@ pub type DC = Pin<Gpio16, PushPullOutput>;
 
 pub type GpioPin<T> = Pin<T, PullDownDisabled>;
 
-pub struct PicoDisplay {
-    pub screen: Screen,
-    pub buttons: Buttons,
-}
-
 pub struct Buttons {
     pub a: Pin<Gpio12, PullUpInput>,
     pub b: Pin<Gpio13, PullUpInput>,
     pub x: Pin<Gpio14, PullUpInput>,
     pub y: Pin<Gpio15, PullUpInput>,
 }
+
+#[macro_export]
+macro_rules! make_buttons {
+    ($pins:expr) => {
+        Buttons::new($pins.gpio12, $pins.gpio13, $pins.gpio14, $pins.gpio15)
+    };
+}
+
 impl Buttons {
     pub fn new(
         a: GpioPin<Gpio12>,
@@ -142,12 +145,8 @@ impl RGB {
 
 #[macro_export]
 macro_rules! create_picodisplay {
-    ($pins:expr, $pac:expr, $delay:expr, $pwm_rg:expr, $pwm_b:expr) => {
+    ($pins:expr, $pac:expr, $delay:expr) => {
         PicoDisplay::new(
-            $pins.gpio12,
-            $pins.gpio13,
-            $pins.gpio14,
-            $pins.gpio15,
             $pins.gpio16,
             $pins.gpio17,
             $pins.gpio18,
@@ -160,12 +159,11 @@ macro_rules! create_picodisplay {
     };
 }
 
+pub struct PicoDisplay {
+    pub screen: Screen,
+}
 impl PicoDisplay {
     pub fn new(
-        gpio12: GpioPin<Gpio12>,
-        gpio13: GpioPin<Gpio13>,
-        gpio14: GpioPin<Gpio14>,
-        gpio15: GpioPin<Gpio15>,
         gpio16: GpioPin<Gpio16>, // Data / Control (MISO unused)
         gpio17: GpioPin<Gpio17>, // Chip Select
         gpio18: GpioPin<Gpio18>, // SPI0 clock
@@ -187,9 +185,6 @@ impl PicoDisplay {
         let screen = Builder::st7789_pico1(spi_if).init(delay, None).unwrap();
         backlight.set_high().unwrap();
 
-        Self {
-            screen,
-            buttons: Buttons::new(gpio12, gpio13, gpio14, gpio15),
-        }
+        Self { screen }
     }
 }
