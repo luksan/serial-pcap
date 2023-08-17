@@ -37,9 +37,9 @@ async fn read_uart(
     ch_name: UartTxChannel,
     tx: UnboundedSender<UartData>,
 ) -> Result<()> {
-    let mut buf = BytesMut::with_capacity(200);
+    let mut buf = BytesMut::with_capacity(1);
     loop {
-        buf.reserve(20);
+        buf.reserve(1);
         match uart.read_buf(&mut buf).await {
             Ok(0) => {
                 info!("Zero length read");
