@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
 use bytes::BytesMut;
 use clap::Parser;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 use tokio_serial::SerialStream;
 use tracing::{info, trace, Level};
 
@@ -86,7 +89,8 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
                     };
 
                     let l = buf.iter().take_while(|&b| b & 0x80 == ch).count();
-                    let data = buf.split_to(l);
+                    let mut data = buf.split_to(l);
+                    data.iter_mut().for_each(|b| *b &= 0x7f); // clear bit 8
                     tx.send(UartData {
                         ch_name,
                         data,
@@ -107,13 +111,39 @@ async fn record_streams<W: std::io::Write>(
     mut writer: SerialPacketWriter<W>,
     mut rx: UnboundedReceiver<UartData>,
 ) -> Result<()> {
+    let mut prev_ch = UartTxChannel::Node;
+    let mut buf = BytesMut::new();
+    let mut time = std::time::SystemTime::now();
+    let read_timeout = Duration::from_millis(5);
+
     trace!("Stream recorder running");
     loop {
-        let Some(UartData{ch_name, data, time_received}) = rx.recv().await else { return Ok(()); };
-        tokio::task::block_in_place(|| {
-            writer.write_packet_time(data.as_ref(), ch_name, time_received)
-        })
-        .context("write_packet_time() returned an error.")?;
+        let msg = if !buf.is_empty() {
+            let r = timeout(read_timeout, rx.recv()).await;
+            if r.is_err() || matches!(r, Ok(Some(UartData{ch_name, ..})) if ch_name != prev_ch ) {
+                tokio::task::block_in_place(|| {
+                    writer.write_packet_time(buf.as_ref(), prev_ch, time)
+                })
+                .context("write_packet_time() returned an error.")?;
+                buf = BytesMut::new();
+            }
+            match r {
+                Ok(msg) => msg,
+                Err(_) => continue,
+            }
+        } else {
+            rx.recv().await
+        };
+
+        // destructure the received message, or stop if the tx side is closed
+        let Some(UartData{ch_name, data, time_received}) = msg else { return Ok(()); };
+        if buf.is_empty() {
+            time = time_received;
+            prev_ch = ch_name;
+            buf = data;
+        } else {
+            buf.unsplit(data);
+        }
     }
 }
 
