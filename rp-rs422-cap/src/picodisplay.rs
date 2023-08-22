@@ -11,7 +11,7 @@ use mipidsi::{models, Builder, Display};
 use rp_pico::hal::gpio::bank0::{
     Gpio12, Gpio13, Gpio14, Gpio15, Gpio16, Gpio17, Gpio18, Gpio19, Gpio20, Gpio6, Gpio7, Gpio8,
 };
-use rp_pico::hal::gpio::{FunctionSpi, Pin, PullDownDisabled, PullUpInput, PushPullOutput};
+use rp_pico::hal::gpio::{self, FunctionSpi, Pin, PullDownDisabled, PullUpInput, PushPullOutput};
 use rp_pico::hal::{pwm, spi};
 use rp_pico::pac;
 
@@ -65,6 +65,13 @@ impl Buttons {
             x: x.into_mode(),
             y: y.into_mode(),
         }
+    }
+
+    pub fn enable_interrupts(&self, kind: gpio::Interrupt, enabled: bool) {
+        self.a.set_interrupt_enabled(kind, enabled);
+        self.b.set_interrupt_enabled(kind, enabled);
+        self.x.set_interrupt_enabled(kind, enabled);
+        self.y.set_interrupt_enabled(kind, enabled);
     }
 }
 

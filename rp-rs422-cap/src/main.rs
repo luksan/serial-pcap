@@ -2,50 +2,57 @@
 #![no_main]
 #![allow(unused)]
 
-use arrayvec::ArrayString;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicU32, Ordering};
+
+use arrayvec::ArrayString;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::PrimitiveStyle;
-use rp_rs422_cap::picodisplay::{self, Buttons, PicoDisplay};
-
+use rp_pico::hal::{self, gpio, uart};
+use rp_pico::pac;
 // USB Device support
 use usb_device::{class_prelude::*, prelude::*};
 // USB Communications Class Device support
 use usbd_serial::SerialPort;
+
+use rp_rs422_cap::picodisplay::{self, Buttons, PicoDisplay};
+
+type UartRxPin<P> = gpio::Pin<P, gpio::FunctionUart>;
+type UartDev<D, P> = uart::UartPeripheral<uart::Enabled, D, uart::Pins<(), UartRxPin<P>, (), ()>>;
+
+type Uart0 = UartDev<pac::UART0, gpio::bank0::Gpio1>;
+type Uart1 = UartDev<pac::UART1, gpio::bank0::Gpio5>;
 
 #[rtic::app(
     device = rp_pico::hal::pac,
     dispatchers = [TIMER_IRQ_1]
 )]
 mod app {
-    use super::*;
+    use core::mem::MaybeUninit;
 
+    use embedded_graphics::pixelcolor::Rgb888;
+    use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
+    use embedded_hal::PwmPin;
+    use gpio::FunctionSpi;
+    use hal::clocks::ClockSource;
+    use panic_probe as _;
     use rp2040_monotonic::{
         fugit::Duration,
         fugit::RateExtU32, // For .kHz() conversion funcs
         Rp2040Monotonic,
     };
     use rp_pico::hal::{
-        self, clocks, gpio,
         gpio::pin::bank0::{Gpio2, Gpio25, Gpio3},
         gpio::pin::PushPullOutput,
         pac, pwm,
         sio::Sio,
-        watchdog::Watchdog,
-        I2C,
+        Clock, I2C,
     };
     use rp_pico::XOSC_CRYSTAL_FREQ;
 
-    use core::mem::MaybeUninit;
-    use embedded_graphics::pixelcolor::Rgb888;
-    use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
-    use embedded_hal::PwmPin;
-
-    use panic_probe as _;
-    use rp2040_hal::clocks::ClockSource;
-    use rp2040_hal::gpio::FunctionSpi;
     use rp_rs422_cap::{create_picodisplay, make_buttons};
+
+    use super::*;
 
     const MONO_NUM: u32 = 1;
     const MONO_DENOM: u32 = 1000000;
@@ -66,6 +73,8 @@ mod app {
         led: gpio::Pin<Gpio25, PushPullOutput>,
         picodisplay: PicoDisplay,
         usb_device: UsbDevice<'static, hal::usb::UsbBus>,
+        uart0: Uart0,
+        uart1: Uart1,
     }
 
     #[init(local=[
@@ -75,9 +84,9 @@ mod app {
         let mut pac = ctx.device;
 
         // Configure the clocks, watchdog - The default is to generate a 125 MHz system clock
-        let mut watchdog = Watchdog::new(pac.WATCHDOG);
+        let mut watchdog = hal::watchdog::Watchdog::new(pac.WATCHDOG);
 
-        let clocks = clocks::init_clocks_and_plls(
+        let clocks: hal::clocks::ClocksManager = hal::clocks::init_clocks_and_plls(
             XOSC_CRYSTAL_FREQ,
             pac.XOSC,
             pac.CLOCKS,
@@ -115,9 +124,21 @@ mod app {
         let picodisplay = create_picodisplay!(rp_pins, pac, delay);
 
         let mut buttons = make_buttons!(rp_pins);
-        buttons
-            .a
-            .set_interrupt_enabled(gpio::Interrupt::EdgeLow, true);
+        buttons.enable_interrupts(gpio::Interrupt::EdgeLow, true);
+
+        // Configure the serial UARTs
+        let uart0 = uart_setup(
+            rp_pins.gpio1.into_mode(),
+            pac.UART0,
+            &clocks.peripheral_clock,
+            &mut pac.RESETS,
+        );
+        let uart1 = uart_setup(
+            rp_pins.gpio5.into_mode(),
+            pac.UART1,
+            &clocks.peripheral_clock,
+            &mut pac.RESETS,
+        );
 
         // Set up the USB driver
         let mut usb_bus_uninit = ctx.local.usb_bus_uninit;
@@ -143,7 +164,7 @@ mod app {
             .device_class(2) // from: https://www.usb.org/defined-class-codes
             .build();
 
-        let mono = Rp2040Mono::new(pac.TIMER);
+        let monotonic = Rp2040Mono::new(pac.TIMER);
 
         // Spawn heartbeat task
         heartbeat::spawn().unwrap();
@@ -159,9 +180,38 @@ mod app {
                 led,
                 usb_device,
                 picodisplay,
+                uart0,
+                uart1,
             },
-            init::Monotonics(mono),
+            init::Monotonics(monotonic),
         )
+    }
+
+    fn uart_setup<D, P>(
+        pin: gpio::Pin<P, gpio::FunctionUart>,
+        dev: D,
+        peripheral_clock: &hal::clocks::PeripheralClock,
+        resets: &mut pac::RESETS,
+    ) -> UartDev<D, P>
+    where
+        D: uart::UartDevice,
+        P: gpio::PinId + gpio::bank0::BankPinId,
+        gpio::Pin<P, gpio::FunctionUart>: uart::Rx<D>,
+    {
+        // TODO: ValidPinMode should imply PinMode and BankPinId should imply PinId
+        let rx_pin = pin.into_mode::<gpio::FunctionUart>();
+        let uart_config = uart::UartConfig::new(
+            9600.Hz(),
+            uart::DataBits::Seven,
+            Some(uart::Parity::Even),
+            uart::StopBits::One,
+        );
+        // TODO: uart config should be Clone, and new() should take it by reference
+        let mut uart = uart::UartPeripheral::new(dev, uart::Pins::default().rx(rx_pin), resets)
+            .enable(uart_config, peripheral_clock.freq())
+            .unwrap();
+        uart.enable_rx_interrupt();
+        uart
     }
 
     #[task(local = [led, picodisplay])]
@@ -176,10 +226,45 @@ mod app {
         heartbeat::spawn_after(one_second).unwrap();
     }
 
+    #[task(binds = UART0_IRQ, local = [uart0], shared = [usb_serial])]
+    fn uart0_irq(mut ctx: uart0_irq::Context) {
+        let uart: &mut Uart0 = ctx.local.uart0;
+        let mut buf = [0; 32];
+        let data = match uart.read_raw(&mut buf) {
+            Ok(len) => &buf[0..len],
+            Err(nb::Error::WouldBlock) => b"",
+            Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded,
+        };
+        ctx.shared.usb_serial.lock(|serial: &mut SerialPort<_>| {
+            serial.write(data);
+            serial.flush();
+        })
+    }
+
+    #[task(binds = UART1_IRQ, local = [uart1], shared = [usb_serial])]
+    fn uart1_irq(mut ctx: uart1_irq::Context) {
+        let uart: &mut Uart1 = ctx.local.uart1;
+        let mut buf = [0; 32];
+        let len = match uart.read_raw(&mut buf) {
+            Ok(len) => len,
+            Err(nb::Error::WouldBlock) => 0,
+            Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded.len(),
+        };
+        let data = &mut buf[0..len];
+        for b in data.iter_mut() {
+            *b |= 0x80; // set bit 8 high to indicate uart 1
+        }
+
+        ctx.shared.usb_serial.lock(|serial: &mut SerialPort<_>| {
+            serial.write(data);
+            serial.flush();
+        })
+    }
+
     #[task(
     binds = USBCTRL_IRQ,
     priority=2,
-    local = [usb_device, ],
+    local = [usb_device],
     shared = [usb_serial, usb_serial2],
     )]
     fn usb_irq(ctx: usb_irq::Context) {
@@ -222,7 +307,7 @@ fn r(disp: &mut PicoDisplay) {
     use embedded_graphics::text::{Alignment, Text};
 
     let screen = &mut disp.screen;
-    screen.clear(RgbColor::BLUE).unwrap();
+    // screen.clear(RgbColor::BLUE).unwrap();
 
     let style = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)

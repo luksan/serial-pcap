@@ -11,6 +11,7 @@ cortex-m-rt = "0.7"
 cortex-m-rtic = "1.1.4"
 embedded-hal = { version = "0.2.7", features = ["unproven"] }
 fugit = "0.3.7"
+nb = "1.1.0"
 panic-probe = "0.3.1"
 rp-pico = { version = "0.7", features = ["critical-section-impl"] }
 rp2040-monotonic = "1.2.0"
