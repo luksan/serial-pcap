@@ -16,9 +16,14 @@ struct CmdlineOpts {
     #[clap(long, value_name = "SERIAL_PORT")]
     /// One side of the UART
     ctrl: String,
+
     /// The other side of the UART
     #[clap(long, value_name = "SERIAL_PORT")]
-    node: String,
+    node: Option<String>,
+
+    /// The ctrl and node bytes are received on the same UART, with the node bytes having MSB set high.
+    #[clap(long = "muxed-stream")]
+    muxed: bool,
 
     /// The pcap filename, will be overwritten if it exists
     pcap_file: String,
@@ -61,6 +66,42 @@ async fn read_uart(
     }
 }
 
+async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) -> Result<()> {
+    let mut buf = BytesMut::with_capacity(1);
+    loop {
+        buf.reserve(1);
+        match uart.read_buf(&mut buf).await {
+            Ok(0) => {
+                info!("Zero length read");
+                bail!("Read from muxed uart returned 0 bytes.");
+            }
+            Ok(len) => {
+                let time_received = std::time::SystemTime::now();
+                trace!("Received {len} bytes.");
+                while !buf.is_empty() {
+                    let ch = buf[0] & 0x80;
+                    let ch_name = match ch == 0x80 {
+                        true => UartTxChannel::Node,
+                        false => UartTxChannel::Ctrl,
+                    };
+
+                    let l = buf.iter().take_while(|&b| b & 0x80 == ch).count();
+                    let data = buf.split_to(l);
+                    tx.send(UartData {
+                        ch_name,
+                        data,
+                        time_received,
+                    })?;
+                }
+            }
+            err => {
+                info!("UART read returned with error {err:?}");
+                err.with_context(|| format!("Read error from muxed UART."))?;
+            }
+        }
+    }
+}
+
 #[tracing::instrument(skip_all)]
 async fn record_streams<W: std::io::Write>(
     mut writer: SerialPacketWriter<W>,
@@ -98,17 +139,25 @@ async fn main() -> Result<()> {
 
     let pcap_writer = SerialPacketWriter::new_file(args.pcap_file)?;
     let ctrl = open_async_uart(&args.ctrl)?;
-    let node = open_async_uart(&args.node)?;
 
     let (tx, rx) = unbounded_channel();
     let mut recorder = tokio::spawn(record_streams(pcap_writer, rx));
 
     let res;
-    tokio::select! {
-        r = await_task(&mut recorder) => { return r.context("Error in stream recorder task."); }
-        r = read_uart(ctrl, UartTxChannel::Ctrl, tx.clone()) => {res = r;}
-        r = read_uart(node, UartTxChannel::Node, tx) => {res = r;}
-        _ = tokio::signal::ctrl_c() => { res = Ok(()) }
+    if args.muxed {
+        tokio::select! {
+            r = await_task(&mut recorder) => { return r.context("Error in stream recorder task."); }
+            r = read_muxed_uart(ctrl, tx) => {res = r;}
+            _ = tokio::signal::ctrl_c() => { res = Ok(()) }
+        }
+    } else {
+        let node = open_async_uart(args.node.as_ref().unwrap())?;
+        tokio::select! {
+            r = await_task(&mut recorder) => { return r.context("Error in stream recorder task."); }
+            r = read_uart(ctrl, UartTxChannel::Ctrl, tx.clone()) => {res = r;}
+            r = read_uart(node, UartTxChannel::Node, tx) => {res = r;}
+            _ = tokio::signal::ctrl_c() => { res = Ok(()) }
+        }
     }
 
     info!("Waiting for the recorder to stop.");
