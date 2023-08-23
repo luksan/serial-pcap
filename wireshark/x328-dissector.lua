@@ -29,7 +29,7 @@ function dissect_master(tvb, pinfo, tree)
     if tvb(5,1):uint() == 2 then -- write command
         local param = tree:add(x328_proto.fields.parameter, tvb(6,4))
         local value_len = 0
-        for i = 1, 6,1 do
+        for i = 1, 7, 1 do
             if tvb(9+i,1):uint() == 3 then
                 value_len = i-1
                 break

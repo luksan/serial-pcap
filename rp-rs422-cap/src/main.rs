@@ -210,6 +210,7 @@ mod app {
         let mut uart = uart::UartPeripheral::new(dev, uart::Pins::default().rx(rx_pin), resets)
             .enable(uart_config, peripheral_clock.freq())
             .unwrap();
+        uart.set_fifos(false);
         uart.enable_rx_interrupt();
         uart
     }
@@ -226,22 +227,23 @@ mod app {
         heartbeat::spawn_after(one_second).unwrap();
     }
 
-    #[task(binds = UART0_IRQ, local = [uart0], shared = [usb_serial])]
+    #[task(binds = UART0_IRQ, priority = 2, local = [uart0], shared = [usb_serial])]
     fn uart0_irq(mut ctx: uart0_irq::Context) {
         let uart: &mut Uart0 = ctx.local.uart0;
         let mut buf = [0; 32];
-        let data = match uart.read_raw(&mut buf) {
-            Ok(len) => &buf[0..len],
-            Err(nb::Error::WouldBlock) => b"",
-            Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded,
-        };
+
         ctx.shared.usb_serial.lock(|serial: &mut SerialPort<_>| {
+            let data = match uart.read_raw(&mut buf) {
+                Ok(len) => &buf[0..len],
+                Err(nb::Error::WouldBlock) => b"",
+                Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded,
+            };
             serial.write(data);
             serial.flush();
         })
     }
 
-    #[task(binds = UART1_IRQ, local = [uart1], shared = [usb_serial])]
+    #[task(binds = UART1_IRQ, priority = 1, local = [uart1], shared = [usb_serial])]
     fn uart1_irq(mut ctx: uart1_irq::Context) {
         let uart: &mut Uart1 = ctx.local.uart1;
         let mut buf = [0; 32];
@@ -263,7 +265,7 @@ mod app {
 
     #[task(
     binds = USBCTRL_IRQ,
-    priority=2,
+    priority=3,
     local = [usb_device],
     shared = [usb_serial, usb_serial2],
     )]

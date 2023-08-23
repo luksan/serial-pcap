@@ -80,7 +80,7 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
             }
             Ok(len) => {
                 let time_received = std::time::SystemTime::now();
-                trace!("Received {len} bytes.");
+                // trace!("Received {len} bytes.");
                 while !buf.is_empty() {
                     let ch = buf[0] & 0x80;
                     let ch_name = match ch == 0x80 {
@@ -114,7 +114,7 @@ async fn record_streams<W: std::io::Write>(
     let mut prev_ch = UartTxChannel::Node;
     let mut buf = BytesMut::new();
     let mut time = std::time::SystemTime::now();
-    let read_timeout = Duration::from_millis(5);
+    let read_timeout = Duration::from_millis(10);
 
     trace!("Stream recorder running");
     loop {
