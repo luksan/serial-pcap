@@ -4,6 +4,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use arrayvec::ArrayVec;
 use bytes::{Buf, BytesMut};
+use chrono::Utc;
 use etherparse::{PacketBuilder, SlicedPacket, TransportSlice};
 use rpcap::read::PcapReader;
 use rpcap::write::{PcapWriter, WriteOptions};
@@ -18,10 +19,14 @@ pub struct SerialPacketWriter<W: std::io::Write> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u16)]
 pub enum UartTxChannel {
-    Ctrl,
-    Node,
+    Ctrl = 422,
+    Node = 1422,
 }
+
+const CTRL: u16 = UartTxChannel::Ctrl as _;
+const NODE: u16 = UartTxChannel::Node as _;
 
 impl SerialPacketWriter<File> {
     pub fn new_file(filename: impl AsRef<Path>) -> Result<Self> {
@@ -57,8 +62,8 @@ impl<W: std::io::Write> SerialPacketWriter<W> {
         time: std::time::SystemTime,
     ) -> Result<()> {
         let (ip, ports) = match channel {
-            UartTxChannel::Ctrl => (([127, 0, 0, 1], [127, 0, 0, 2]), (422, 1442)),
-            UartTxChannel::Node => (([127, 0, 0, 2], [127, 0, 0, 1]), (1442, 422)),
+            UartTxChannel::Ctrl => (([127, 0, 0, 1], [127, 0, 0, 2]), (CTRL, NODE)),
+            UartTxChannel::Node => (([127, 0, 0, 2], [127, 0, 0, 1]), (NODE, CTRL)),
         };
 
         for data in data.chunks(MAX_PACKET_LEN - 32) {
@@ -77,6 +82,21 @@ impl<W: std::io::Write> SerialPacketWriter<W> {
                 .context("Failed to write packet to pcap file")?;
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SerialPacket {
+    pub ch: UartTxChannel,
+    pub data: BytesMut,
+    pub time: chrono::DateTime<Utc>,
+}
+
+impl<R: std::io::Read> Iterator for SerialPacketReader<R> {
+    type Item = Result<SerialPacket>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_packet().transpose()
     }
 }
 
@@ -108,6 +128,26 @@ impl<R: std::io::Read> SerialPacketReader<R> {
         Ok(buf.split_to(len))
     }
 
+    pub fn next_packet(&mut self) -> Result<Option<SerialPacket>> {
+        let Some(pkt) = self.pcap_reader.next().context("Pcap read error")? else { return Ok(None) };
+        let time = chrono::DateTime::from(pkt.time);
+        assert_eq!(pkt.orig_len, pkt.data.len());
+        let pkt = SlicedPacket::from_ip(pkt.data).context("Failed to slice packet")?;
+        let Some(TransportSlice::Udp(udp_hdr)) = pkt.transport else { bail!("Failed to find UDP header in pkt.")};
+        let source_port = udp_hdr.source_port();
+        let ch = match source_port {
+            CTRL => UartTxChannel::Ctrl,
+            NODE => UartTxChannel::Node,
+            1442 => UartTxChannel::Node, // anyhow..
+            _ => bail!("Incorrect UDP source port {source_port}."),
+        };
+        Ok(Some(SerialPacket {
+            ch,
+            data: BytesMut::from(pkt.payload),
+            time,
+        }))
+    }
+
     pub fn reader(&mut self, ch: UartTxChannel) -> impl std::io::Read + '_ {
         ReadPcapReadImpl { reader: self, ch }
     }
@@ -120,24 +160,17 @@ impl<R: std::io::Read> SerialPacketReader<R> {
     }
 
     fn fill_buffer(&mut self, ch: UartTxChannel) -> Result<()> {
-        while self.get_buffer(ch).is_empty() && self.next_packet()? {}
+        while self.get_buffer(ch).is_empty() && self.extend_one_pkt()? {}
         Ok(())
     }
 
-    fn next_packet(&mut self) -> Result<bool> {
-        let Some(pkt) = self.pcap_reader.next().context("Pcap read error")? else { return Ok(false) };
-        self.stream_time = pkt.time;
-        assert_eq!(pkt.orig_len, pkt.data.len());
-        let pkt = SlicedPacket::from_ip(pkt.data).context("Failed to slice packet")?;
-        let Some(TransportSlice::Udp(udp_hdr)) = pkt.transport else { bail!("Failed to find UDP header in pkt.")};
-        let source_port = udp_hdr.source_port();
-        let buf = match source_port {
-            422 => &mut self.ctrl_buf,
-            1422 => &mut self.node_buf,
-            1442 => &mut self.node_buf, // anyhow...
-            _ => bail!("Incorrect UDP source port {source_port}."),
+    fn extend_one_pkt(&mut self) -> Result<bool> {
+        let Some(pkt) = self.next_packet()? else { return Ok(false) };
+        let buf = match pkt.ch {
+            UartTxChannel::Ctrl => &mut self.ctrl_buf,
+            UartTxChannel::Node => &mut self.node_buf,
         };
-        buf.extend_from_slice(pkt.payload);
+        buf.unsplit(pkt.data);
         Ok(true)
     }
 }

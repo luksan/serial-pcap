@@ -78,9 +78,9 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
                 info!("Zero length read");
                 bail!("Read from muxed uart returned 0 bytes.");
             }
-            Ok(len) => {
+            Ok(_len) => {
                 let time_received = std::time::SystemTime::now();
-                // trace!("Received {len} bytes.");
+                // trace!("Received {_len} bytes.");
                 while !buf.is_empty() {
                     let ch = buf[0] & 0x80;
                     let ch_name = match ch == 0x80 {

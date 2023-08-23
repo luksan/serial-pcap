@@ -3,13 +3,13 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use std::iter::Peekable;
 
-use x328_proto::master::Error::ProtocolError;
 use x328_proto::master::SendData;
 use x328_proto::node::Node;
 use x328_proto::{addr, master, Address, NodeState, Parameter, Value};
 
-use serial_pcap::{SerialPacketReader, UartTxChannel};
+use serial_pcap::{SerialPacket, SerialPacketReader, UartTxChannel};
 
 #[derive(Copy, Clone, Debug)]
 enum BusCommand {
@@ -25,13 +25,38 @@ enum BusCommand {
 }
 
 fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) -> Result<()> {
+    let pkt_iter = &mut uart_reader.peekable();
+
+    pkt_iter.take(10).for_each(|_| {});
+
     let mut ctrl = master::Master::new();
     let mut node = Node::new(addr(0));
     let mut token = node.reset();
     loop {
+        let Some (pkt) = pkt_iter.next().transpose()? else { return Ok(()) };
+        println!("node pkt: {pkt:?}");
+        let data: &[u8] = pkt.data.as_ref();
+        if pkt.ch == UartTxChannel::Node {
+            // A node transmitted unexpectedly
+            println!("Unexpected data on node channel {data:?}");
+            token = node.reset();
+            loop {
+                // resync
+                match pkt_iter.peek() {
+                    None => return Ok(()),
+                    Some(Ok(SerialPacket {
+                        ch: UartTxChannel::Ctrl,
+                        data,
+                        ..
+                    })) if data[0] == 0x04 => break,
+                    _ => {}
+                }
+                pkt_iter.next();
+            }
+            continue;
+        }
         match node.state(token) {
             NodeState::ReceiveData(r) => {
-                let data = uart_reader.read_bytes(UartTxChannel::Ctrl, 1)?;
                 if data.is_empty() {
                     return Ok(());
                 }
@@ -41,35 +66,34 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                 token = s.data_sent();
             }
             NodeState::ReadParameter(r) => {
-                let resp = receive_node_response(
+                let resp = receive_node_response::<Value, R>(
                     ctrl.read_parameter(r.address(), r.parameter()),
-                    uart_reader,
+                    pkt_iter,
                 );
                 println!(
                     "{:?} Read {:?}@{:?} => {resp:?}",
-                    DateTime::<Utc>::from(uart_reader.stream_time),
+                    pkt.time,
                     r.parameter(),
                     r.address()
                 );
-                token = r.send_reply_ok(resp?);
+                token = r.send_read_failed();
             }
             NodeState::WriteParameter(w) => {
-                let resp = receive_node_response(
+                let resp = receive_node_response::<_, R>(
                     ctrl.write_parameter(w.address(), w.parameter(), w.value()),
-                    uart_reader,
+                    pkt_iter,
                 );
                 println!(
                     "{:?} Write {:?} to {:?}@{:?} => {resp:?}",
-                    DateTime::<Utc>::from(uart_reader.stream_time),
+                    pkt.time,
                     w.value(),
                     w.parameter(),
                     w.address()
                 );
                 token = match resp {
-                    Ok(()) => w.write_ok(),
+                    Ok((_time, ())) => w.write_ok(),
                     Err(_) => w.write_error(),
                 };
-                resp?;
             }
         };
     }
@@ -77,27 +101,31 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
 
 fn receive_node_response<Response, R: std::io::Read>(
     mut recv: impl SendData<Response = Response>,
-    uart_reader: &mut SerialPacketReader<R>,
-) -> Result<Response> {
+    pkt_iter: &mut Peekable<impl Iterator<Item = Result<SerialPacket>>>,
+) -> Result<(DateTime<Utc>, Response)> {
     let recv = recv.data_sent();
-    loop {
-        let data = uart_reader.read_bytes(UartTxChannel::Node, 1)?;
-        if data.is_empty() {
-            bail!("No data");
+    if matches!(
+        pkt_iter.peek(),
+        Some(Ok(SerialPacket {
+            ch: UartTxChannel::Ctrl,
+            ..
+        }))
+    ) {
+        bail!("Bus controller timed out")
+    }
+    match pkt_iter.next() {
+        Some(Ok(pkt)) => {
+            println!("{pkt:?}");
+            let ret = Ok((
+                pkt.time,
+                recv.receive_data(pkt.data.as_ref())
+                    .context("Not enough data in packet")??,
+            ));
+            pkt_iter.next();
+            return ret;
         }
-        // println!("Node tx {:2x}", data[0]);
-        if data[0] == 0 {
-            continue;
-        }; // Skip NUL bytes FIXME: x328_proto should handle this
-        if let Some(value) = recv.receive_data(data.as_ref()) {
-            match value {
-                Err(ProtocolError) => {
-                    println!("Node tx resync event.");
-                    continue;
-                }
-                r => return r.context("Receiver error"),
-            };
-        }
+        Some(Err(err)) => return Err(err),
+        None => bail!("No more packets."),
     }
 }
 
