@@ -114,13 +114,13 @@ async fn record_streams<W: std::io::Write>(
     let mut prev_ch = UartTxChannel::Node;
     let mut buf = BytesMut::new();
     let mut time = std::time::SystemTime::now();
-    let read_timeout = Duration::from_millis(10);
+    let read_timeout = Duration::from_millis(5);
 
     trace!("Stream recorder running");
     loop {
         let msg = if !buf.is_empty() {
             let r = timeout(read_timeout, rx.recv()).await;
-            if r.is_err() || matches!(r, Ok(Some(UartData{ch_name, ..})) if ch_name != prev_ch ) {
+            if r.is_err() || matches!(r, Ok(Some(UartData{ch_name, ref data, ..})) if ch_name != prev_ch || data[0] == 0x04 ) {
                 tokio::task::block_in_place(|| {
                     writer.write_packet_time(buf.as_ref(), prev_ch, time)
                 })

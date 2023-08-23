@@ -27,36 +27,33 @@ enum BusCommand {
 fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) -> Result<()> {
     let pkt_iter = &mut uart_reader.peekable();
 
-    pkt_iter.take(10).for_each(|_| {});
-
     let mut ctrl = master::Master::new();
     let mut node = Node::new(addr(0));
     let mut token = node.reset();
     loop {
-        let Some (pkt) = pkt_iter.next().transpose()? else { return Ok(()) };
-        println!("node pkt: {pkt:?}");
-        let data: &[u8] = pkt.data.as_ref();
-        if pkt.ch == UartTxChannel::Node {
-            // A node transmitted unexpectedly
-            println!("Unexpected data on node channel {data:?}");
-            token = node.reset();
-            loop {
-                // resync
-                match pkt_iter.peek() {
-                    None => return Ok(()),
-                    Some(Ok(SerialPacket {
-                        ch: UartTxChannel::Ctrl,
-                        data,
-                        ..
-                    })) if data[0] == 0x04 => break,
-                    _ => {}
-                }
-                pkt_iter.next();
-            }
-            continue;
-        }
         match node.state(token) {
             NodeState::ReceiveData(r) => {
+                let Some (pkt) = pkt_iter.next().transpose()? else { return Ok(()) };
+                let data: &[u8] = pkt.data.as_ref();
+                if pkt.ch == UartTxChannel::Node {
+                    // A node transmitted unexpectedly
+                    println!("Unexpected data on node channel {data:?}");
+                    token = node.reset();
+                    loop {
+                        // resync
+                        match pkt_iter.peek() {
+                            None => return Ok(()),
+                            Some(Ok(SerialPacket {
+                                ch: UartTxChannel::Ctrl,
+                                data,
+                                ..
+                            })) if data[0] == 0x04 => break,
+                            _ => {}
+                        }
+                        pkt_iter.next();
+                    }
+                    continue;
+                }
                 if data.is_empty() {
                     return Ok(());
                 }
@@ -71,8 +68,8 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                     pkt_iter,
                 );
                 println!(
-                    "{:?} Read {:?}@{:?} => {resp:?}",
-                    pkt.time,
+                    " Read {:?}@{:?} => {resp:?}",
+                    // pkt.time,
                     r.parameter(),
                     r.address()
                 );
@@ -84,8 +81,8 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                     pkt_iter,
                 );
                 println!(
-                    "{:?} Write {:?} to {:?}@{:?} => {resp:?}",
-                    pkt.time,
+                    " Write {:?} to {:?}@{:?} => {resp:?}",
+                    // pkt.time,
                     w.value(),
                     w.parameter(),
                     w.address()
@@ -104,6 +101,7 @@ fn receive_node_response<Response, R: std::io::Read>(
     pkt_iter: &mut Peekable<impl Iterator<Item = Result<SerialPacket>>>,
 ) -> Result<(DateTime<Utc>, Response)> {
     let recv = recv.data_sent();
+
     if matches!(
         pkt_iter.peek(),
         Some(Ok(SerialPacket {
@@ -115,13 +113,11 @@ fn receive_node_response<Response, R: std::io::Read>(
     }
     match pkt_iter.next() {
         Some(Ok(pkt)) => {
-            println!("{pkt:?}");
             let ret = Ok((
                 pkt.time,
                 recv.receive_data(pkt.data.as_ref())
                     .context("Not enough data in packet")??,
             ));
-            pkt_iter.next();
             return ret;
         }
         Some(Err(err)) => return Err(err),
