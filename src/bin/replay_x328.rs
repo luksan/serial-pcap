@@ -33,11 +33,13 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
     loop {
         match node.state(token) {
             NodeState::ReceiveData(r) => {
-                let Some (pkt) = pkt_iter.next().transpose()? else { return Ok(()) };
+                let Some(pkt) = pkt_iter.next().transpose()? else {
+                    return Ok(());
+                };
                 let data: &[u8] = pkt.data.as_ref();
                 if pkt.ch == UartTxChannel::Node {
                     // A node transmitted unexpectedly
-                    println!("Unexpected data on node channel {data:?}");
+                    println!("Unexpected data on node tx channel {data:?}");
                     token = node.reset();
                     loop {
                         // resync
@@ -63,7 +65,7 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                 token = s.data_sent();
             }
             NodeState::ReadParameter(r) => {
-                let resp = receive_node_response::<Value, R>(
+                let resp = receive_node_response::<Value>(
                     ctrl.read_parameter(r.address(), r.parameter()),
                     pkt_iter,
                 );
@@ -76,7 +78,7 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                 token = r.send_read_failed();
             }
             NodeState::WriteParameter(w) => {
-                let resp = receive_node_response::<_, R>(
+                let resp = receive_node_response::<_>(
                     ctrl.write_parameter(w.address(), w.parameter(), w.value()),
                     pkt_iter,
                 );
@@ -96,7 +98,7 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
     }
 }
 
-fn receive_node_response<Response, R: std::io::Read>(
+fn receive_node_response<Response>(
     mut recv: impl SendData<Response = Response>,
     pkt_iter: &mut Peekable<impl Iterator<Item = Result<SerialPacket>>>,
 ) -> Result<(DateTime<Utc>, Response)> {
@@ -112,15 +114,12 @@ fn receive_node_response<Response, R: std::io::Read>(
         bail!("Bus controller timed out")
     }
     match pkt_iter.next() {
-        Some(Ok(pkt)) => {
-            let ret = Ok((
-                pkt.time,
-                recv.receive_data(pkt.data.as_ref())
-                    .context("Not enough data in packet")??,
-            ));
-            return ret;
-        }
-        Some(Err(err)) => return Err(err),
+        Some(Ok(pkt)) => Ok((
+            pkt.time,
+            recv.receive_data(pkt.data.as_ref())
+                .context("Not enough data in packet")??,
+        )),
+        Some(Err(err)) => Err(err),
         None => bail!("No more packets."),
     }
 }

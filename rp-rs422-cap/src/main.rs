@@ -3,6 +3,7 @@
 #![allow(unused)]
 
 use core::fmt::Write;
+use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use arrayvec::ArrayString;
@@ -23,10 +24,7 @@ type UartDev<D, P> = uart::UartPeripheral<uart::Enabled, D, uart::Pins<(), UartR
 type Uart0 = UartDev<pac::UART0, gpio::bank0::Gpio1>;
 type Uart1 = UartDev<pac::UART1, gpio::bank0::Gpio5>;
 
-#[rtic::app(
-    device = rp_pico::hal::pac,
-    dispatchers = [TIMER_IRQ_1]
-)]
+#[rtic::app(device = pac, dispatchers = [TIMER_IRQ_1])]
 mod app {
     use core::mem::MaybeUninit;
 
@@ -49,7 +47,9 @@ mod app {
         Clock, I2C,
     };
     use rp_pico::XOSC_CRYSTAL_FREQ;
+    use x328_proto::scanner;
 
+    use rp_rs422_cap::x328_bus::UartBuf;
     use rp_rs422_cap::{create_picodisplay, make_buttons};
 
     use super::*;
@@ -65,6 +65,7 @@ mod app {
     struct Shared {
         usb_serial: SerialPort<'static, hal::usb::UsbBus>,
         usb_serial2: SerialPort<'static, hal::usb::UsbBus>,
+        x328_scanner: scanner::Scanner,
     }
 
     #[local]
@@ -78,7 +79,7 @@ mod app {
     }
 
     #[init(local=[
-        usb_bus_uninit: MaybeUninit<usb_device::bus::UsbBusAllocator<hal::usb::UsbBus>> = MaybeUninit::uninit(),
+        usb_bus_uninit: MaybeUninit<UsbBusAllocator<hal::usb::UsbBus>> = MaybeUninit::uninit(),
     ])]
     fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         let mut pac = ctx.device;
@@ -174,6 +175,7 @@ mod app {
             Shared {
                 usb_serial,
                 usb_serial2,
+                x328_scanner: Default::default(),
             },
             Local {
                 buttons,
@@ -227,40 +229,87 @@ mod app {
         heartbeat::spawn_after(one_second).unwrap();
     }
 
-    #[task(binds = UART0_IRQ, priority = 2, local = [uart0], shared = [usb_serial])]
-    fn uart0_irq(mut ctx: uart0_irq::Context) {
-        let uart: &mut Uart0 = ctx.local.uart0;
-        let mut buf = [0; 32];
-
-        ctx.shared.usb_serial.lock(|serial: &mut SerialPort<_>| {
-            let data = match uart.read_raw(&mut buf) {
-                Ok(len) => &buf[0..len],
-                Err(nb::Error::WouldBlock) => b"",
-                Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded,
-            };
-            serial.write(data);
+    #[task(capacity = 3, shared = [ usb_serial2 ])]
+    fn x328_event_handler(mut ctx: x328_event_handler::Context, ev: scanner::Event) {
+        use scanner::{ControllerEvent, Event, NodeEvent};
+        let mut msg = ArrayString::<100>::new();
+        match ev {
+            Event::Ctrl(ev) => match ev {
+                ControllerEvent::Read(a, p) => {
+                    write!(msg, "Read {}@{}", *p, *a);
+                }
+                ControllerEvent::Write(_, _, _) => {}
+                ControllerEvent::NodeTimeout => {}
+            },
+            Event::Node(ev) => match ev {
+                NodeEvent::Write(_) => {}
+                NodeEvent::Read(_) => {}
+                NodeEvent::UnexpectedTransmission => {}
+            },
+        }
+        ctx.shared.usb_serial2.lock(|serial| {
+            serial.write(msg.as_bytes());
             serial.flush();
-        })
+        });
     }
 
-    #[task(binds = UART1_IRQ, priority = 1, local = [uart1], shared = [usb_serial])]
+    // Received from x3.28 node
+    #[task(binds = UART0_IRQ, priority = 2, local = [uart0, buf: UartBuf = UartBuf::new()], shared = [usb_serial, x328_scanner])]
+    fn uart0_irq(mut ctx: uart0_irq::Context) {
+        let uart: &mut Uart0 = ctx.local.uart0;
+        let buf = ctx.local.buf;
+        ctx.shared.usb_serial.lock(|serial: &mut SerialPort<_>| {
+            let tail = buf.tail_slice(1);
+            let len = match uart.read_raw(tail) {
+                Ok(len) => len,
+                Err(nb::Error::WouldBlock) => 0,
+                Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded.len(),
+            };
+            serial.write(&tail[0..len]);
+            serial.flush();
+            buf.incr_len(len);
+        });
+        ctx.shared.x328_scanner.lock(|s| {
+            let (consumed, event) = s.recv_from_node(buf);
+            buf.consume(consumed);
+            if let Some(event) = event {
+                x328_event_handler::spawn(event.into());
+            }
+        });
+    }
+
+    // Received from bus controller
+    #[task(binds = UART1_IRQ, priority = 1, local = [uart1, buf: UartBuf = UartBuf::new()], shared = [usb_serial, x328_scanner])]
     fn uart1_irq(mut ctx: uart1_irq::Context) {
         let uart: &mut Uart1 = ctx.local.uart1;
-        let mut buf = [0; 32];
-        let len = match uart.read_raw(&mut buf) {
+        let buf = ctx.local.buf;
+        let tail = buf.tail_slice(1);
+        let len = match uart.read_raw(tail) {
             Ok(len) => len,
             Err(nb::Error::WouldBlock) => 0,
             Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded.len(),
         };
-        let data = &mut buf[0..len];
-        for b in data.iter_mut() {
+        let tail = &mut tail[0..len];
+        for b in tail.iter_mut() {
             *b |= 0x80; // set bit 8 high to indicate uart 1
         }
 
         ctx.shared.usb_serial.lock(|serial: &mut SerialPort<_>| {
-            serial.write(data);
+            serial.write(tail);
             serial.flush();
-        })
+        });
+        for b in tail.iter_mut() {
+            *b &= 0x7f; // clear bit 8 again
+        }
+        buf.incr_len(len);
+
+        ctx.shared.x328_scanner.lock(|s| {
+            let (consumed, event) = s.recv_from_ctrl(buf);
+            buf.consume(consumed);
+            if let Some(event) = event {
+                x328_event_handler::spawn(event.into());
+            }
+        });
     }
 
     #[task(
