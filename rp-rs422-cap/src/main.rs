@@ -48,8 +48,9 @@ mod app {
     };
     use rp_pico::XOSC_CRYSTAL_FREQ;
     use x328_proto::scanner;
+    use x328_proto::scanner::ControllerEvent;
 
-    use rp_rs422_cap::x328_bus::UartBuf;
+    use rp_rs422_cap::x328_bus::{FieldBus, UartBuf};
     use rp_rs422_cap::{create_picodisplay, make_buttons};
 
     use super::*;
@@ -229,22 +230,42 @@ mod app {
         heartbeat::spawn_after(one_second).unwrap();
     }
 
-    #[task(capacity = 3, shared = [ usb_serial2 ])]
+    #[task(
+        capacity = 3,
+        shared = [ usb_serial2 ],
+        local = [
+            ctrl_ev: ControllerEvent = ControllerEvent::NodeTimeout,
+            fb: FieldBus = FieldBus::new()
+        ])]
     fn x328_event_handler(mut ctx: x328_event_handler::Context, ev: scanner::Event) {
         use scanner::{ControllerEvent, Event, NodeEvent};
         let mut msg = ArrayString::<100>::new();
+        let fb = ctx.local.fb;
+        let ctrl_ev = ctx.local.ctrl_ev;
         match ev {
-            Event::Ctrl(ev) => match ev {
-                ControllerEvent::Read(a, p) => {
-                    write!(msg, "Read {}@{}", *p, *a);
+            Event::Ctrl(ev) => {
+                match ev {
+                    ControllerEvent::Read(a, p) => {}
+                    ControllerEvent::Write(a, p, v) => {}
+                    ControllerEvent::NodeTimeout => {}
                 }
-                ControllerEvent::Write(_, _, _) => {}
-                ControllerEvent::NodeTimeout => {}
-            },
-            Event::Node(ev) => match ev {
-                NodeEvent::Write(_) => {}
-                NodeEvent::Read(_) => {}
-                NodeEvent::UnexpectedTransmission => {}
+                *ctrl_ev = ev;
+            }
+            Event::Node(ev) => match (ev, ctrl_ev) {
+                (NodeEvent::Write(Ok(_)), ControllerEvent::Write(a, p, v)) => {
+                    fb.update_parameter(*a, *p, *v);
+                    if *a == 31 {
+                        write!(msg, "Write {}@{} = {}\r\n", **p, **a, **v);
+                    }
+                }
+                (NodeEvent::Read(Ok(v)), ControllerEvent::Read(a, p)) => {
+                    fb.update_parameter(*a, *p, v);
+                    if *a == 31 {
+                        write!(msg, "Read {}@{} = {}\r\n", **p, **a, *v);
+                    }
+                }
+                (NodeEvent::UnexpectedTransmission, _) => {}
+                _ => {}
             },
         }
         ctx.shared.usb_serial2.lock(|serial| {

@@ -1,5 +1,10 @@
 use core::ops::Deref;
 
+use iobox::IoBox;
+use x328_proto::{Address, Parameter, Value};
+
+mod iobox;
+
 #[derive(Default)]
 pub struct UartBuf {
     len: usize,
@@ -70,4 +75,28 @@ impl UartBuf {
     pub fn len(&self) -> usize {
         self.len
     }
+}
+
+// Tracks all the nodes on the bus in the 25m
+pub struct FieldBus {
+    pub iobox: IoBox,
+}
+
+impl FieldBus {
+    pub const fn new() -> Self {
+        Self {
+            iobox: IoBox::new(),
+        }
+    }
+    pub fn update_parameter(&mut self, a: Address, p: Parameter, v: Value) {
+        match a {
+            IoBox::ADDR => self.iobox.update_parameter(p, v),
+            _ => {}
+        }
+    }
+}
+
+pub trait NodeMirror {
+    const ADDR: Address;
+    fn update_parameter(&mut self, p: Parameter, v: Value);
 }
