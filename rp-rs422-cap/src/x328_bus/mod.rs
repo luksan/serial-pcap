@@ -1,9 +1,11 @@
 use core::ops::Deref;
+use enumflags2::BitFlags;
 
+use crate::x328_bus::iobox::{CommandBit, InputBit, OutputBit};
 use iobox::IoBox;
-use x328_proto::{Address, Parameter, Value};
+use x328_proto::{addr, Address, Parameter, Value};
 
-mod iobox;
+pub mod iobox;
 
 #[derive(Default)]
 pub struct UartBuf {
@@ -82,21 +84,34 @@ pub struct FieldBus {
     pub iobox: IoBox,
 }
 
+pub enum UpdateEvent {
+    StowPress(u16, u16),
+    IoboxInputs(BitFlags<InputBit>),
+    IoboxCmd(BitFlags<CommandBit>),
+    IoboxOutputs(BitFlags<OutputBit>),
+    PolarSpeedCmd(u16),
+}
+
 impl FieldBus {
     pub const fn new() -> Self {
         Self {
             iobox: IoBox::new(),
         }
     }
-    pub fn update_parameter(&mut self, a: Address, p: Parameter, v: Value) {
+    pub fn update_parameter(&mut self, a: Address, p: Parameter, v: Value) -> Option<UpdateEvent> {
+        const POL_DRV: Address = addr(11);
         match a {
             IoBox::ADDR => self.iobox.update_parameter(p, v),
-            _ => {}
+            POL_DRV => match *p {
+                118 => Some(UpdateEvent::PolarSpeedCmd(*v as u16)),
+                _ => None,
+            },
+            _ => None,
         }
     }
 }
 
 pub trait NodeMirror {
     const ADDR: Address;
-    fn update_parameter(&mut self, p: Parameter, v: Value);
+    fn update_parameter(&mut self, p: Parameter, v: Value) -> Option<UpdateEvent>;
 }

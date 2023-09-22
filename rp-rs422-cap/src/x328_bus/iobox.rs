@@ -1,4 +1,4 @@
-use crate::x328_bus::NodeMirror;
+use crate::x328_bus::{NodeMirror, UpdateEvent};
 use enumflags2::{bitflags, BitFlags};
 use x328_proto::{addr, Address, Parameter, Value};
 
@@ -96,26 +96,45 @@ impl IoBox {
 impl NodeMirror for IoBox {
     const ADDR: Address = addr(31);
 
-    fn update_parameter(&mut self, p: Parameter, v: Value) {
+    fn update_parameter(&mut self, p: Parameter, v: Value) -> Option<UpdateEvent> {
         match *p {
             101..=116 => {
                 let bit = BitFlags::from_bits_truncate(1u16 << (*p - 101));
                 self.cmd_reg.set(bit, *v != 0);
+                UpdateEvent::IoboxCmd(self.cmd_reg)
             }
-            117 => self.cmd_reg = BitFlags::from_bits_truncate((*v & 0xffff) as u16),
+            117 => {
+                self.cmd_reg = BitFlags::from_bits_truncate((*v & 0xffff) as u16);
+                UpdateEvent::IoboxCmd(self.cmd_reg)
+            }
             201..=216 => {
                 let bit = BitFlags::from_bits_truncate(1u16 << (*p - 201));
                 self.inputs.set(bit, *v != 0);
+                UpdateEvent::IoboxInputs(self.inputs)
             }
-            217 => self.inputs = BitFlags::from_bits_truncate((*v & 0xffff) as u16),
+            217 => {
+                self.inputs = BitFlags::from_bits_truncate((*v & 0xffff) as u16);
+                UpdateEvent::IoboxInputs(self.inputs)
+            }
             301..=316 => {
                 let bit = BitFlags::from_bits_truncate(1u16 << (*p - 301));
                 self.outputs.set(bit, *v != 0);
+                UpdateEvent::IoboxOutputs(self.outputs)
             }
-            317 => self.outputs = BitFlags::from_bits_truncate((*v & 0xffff) as u16),
-            401 => self.stow_press_east = *v as u16,
-            402 => self.stow_press_west = *v as u16,
-            _ => {}
+            317 => {
+                self.outputs = BitFlags::from_bits_truncate((*v & 0xffff) as u16);
+                UpdateEvent::IoboxOutputs(self.outputs)
+            }
+            401 => {
+                self.stow_press_east = *v as u16;
+                UpdateEvent::StowPress(self.stow_press_east, self.stow_press_west)
+            }
+            402 => {
+                self.stow_press_west = *v as u16;
+                UpdateEvent::StowPress(self.stow_press_east, self.stow_press_west)
+            }
+            _ => return None,
         }
+        .into()
     }
 }

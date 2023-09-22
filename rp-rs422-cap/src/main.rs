@@ -24,7 +24,9 @@ type UartDev<D, P> = uart::UartPeripheral<uart::Enabled, D, uart::Pins<(), UartR
 type Uart0 = UartDev<pac::UART0, gpio::bank0::Gpio1>;
 type Uart1 = UartDev<pac::UART1, gpio::bank0::Gpio5>;
 
-#[rtic::app(device = pac, dispatchers = [TIMER_IRQ_1])]
+mod disp_info;
+
+#[rtic::app(device = pac, dispatchers = [TIMER_IRQ_1, TIMER_IRQ_2])]
 mod app {
     use core::mem::MaybeUninit;
 
@@ -50,8 +52,10 @@ mod app {
     use x328_proto::scanner;
     use x328_proto::scanner::ControllerEvent;
 
-    use rp_rs422_cap::x328_bus::{FieldBus, UartBuf};
+    use rp_rs422_cap::x328_bus::{FieldBus, UartBuf, UpdateEvent};
     use rp_rs422_cap::{create_picodisplay, make_buttons};
+
+    use crate::disp_info::{r, BusDisplay, DisplayUpdates, Info};
 
     use super::*;
 
@@ -66,14 +70,15 @@ mod app {
     struct Shared {
         usb_serial: SerialPort<'static, hal::usb::UsbBus>,
         usb_serial2: SerialPort<'static, hal::usb::UsbBus>,
+        picodisplay: disp_info::BusDisplay,
         x328_scanner: scanner::Scanner,
+        display_updates: DisplayUpdates,
     }
 
     #[local]
     struct Local {
         buttons: Buttons,
         led: gpio::Pin<Gpio25, PushPullOutput>,
-        picodisplay: PicoDisplay,
         usb_device: UsbDevice<'static, hal::usb::UsbBus>,
         uart0: Uart0,
         uart1: Uart1,
@@ -81,6 +86,7 @@ mod app {
 
     #[init(local=[
         usb_bus_uninit: MaybeUninit<UsbBusAllocator<hal::usb::UsbBus>> = MaybeUninit::uninit(),
+        display_updates: DisplayUpdates = DisplayUpdates::new(),
     ])]
     fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         let mut pac = ctx.device;
@@ -124,6 +130,7 @@ mod app {
         rgb.set_color(Rgb888::GREEN);
 
         let picodisplay = create_picodisplay!(rp_pins, pac, delay);
+        let mut picodisplay = disp_info::BusDisplay::new(picodisplay.screen);
 
         let mut buttons = make_buttons!(rp_pins);
         buttons.enable_interrupts(gpio::Interrupt::EdgeLow, true);
@@ -171,18 +178,21 @@ mod app {
         // Spawn heartbeat task
         heartbeat::spawn().unwrap();
 
+        picodisplay.redraw();
+
         // Return resources and timer
         (
             Shared {
                 usb_serial,
                 usb_serial2,
+                picodisplay,
                 x328_scanner: Default::default(),
+                display_updates: DisplayUpdates::new(),
             },
             Local {
                 buttons,
                 led,
                 usb_device,
-                picodisplay,
                 uart0,
                 uart1,
             },
@@ -218,12 +228,21 @@ mod app {
         uart
     }
 
-    #[task(local = [led, picodisplay])]
+    #[idle(shared = [display_updates, picodisplay])]
+    fn idle(mut ctx: idle::Context) -> ! {
+        loop {
+            let info = ctx.shared.display_updates.lock(|u| u.next_change());
+            if let Some(update) = info {
+                ctx.shared.picodisplay.lock(|disp| {
+                    disp.draw_info(update);
+                })
+            }
+        }
+    }
+    #[task(local = [led])]
     fn heartbeat(mut ctx: heartbeat::Context) {
         // Flicker the built-in LED
         _ = ctx.local.led.toggle();
-        let screen = &mut ctx.local.picodisplay;
-        r(screen);
 
         // Re-spawn this task after 1 second
         let one_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS);
@@ -231,47 +250,69 @@ mod app {
     }
 
     #[task(
-        capacity = 3,
-        shared = [ usb_serial2 ],
+        capacity = 1,
+        priority = 2,
+        shared = [ usb_serial2, display_updates ],
         local = [
             ctrl_ev: ControllerEvent = ControllerEvent::NodeTimeout,
-            fb: FieldBus = FieldBus::new()
+            fb: FieldBus = FieldBus::new(),
         ])]
     fn x328_event_handler(mut ctx: x328_event_handler::Context, ev: scanner::Event) {
         use scanner::{ControllerEvent, Event, NodeEvent};
         let mut msg = ArrayString::<100>::new();
         let fb = ctx.local.fb;
         let ctrl_ev = ctx.local.ctrl_ev;
+        let mut update_event = None;
         match ev {
             Event::Ctrl(ev) => {
                 match ev {
-                    ControllerEvent::Read(a, p) => {}
+                    ControllerEvent::Read(a, p) => {
+                        write!(msg, "Read cmd: {}@{}", *p, *a);
+                    }
                     ControllerEvent::Write(a, p, v) => {}
-                    ControllerEvent::NodeTimeout => {}
+                    ControllerEvent::NodeTimeout => match ctrl_ev {
+                        ControllerEvent::Write(a, p, v) => {
+                            write!(msg, "Write timeout: {}@{} = {}", **p, **a, **v);
+                            update_event = fb.update_parameter(*a, *p, *v);
+                        }
+                        _ => {}
+                    },
                 }
                 *ctrl_ev = ev;
             }
             Event::Node(ev) => match (ev, ctrl_ev) {
                 (NodeEvent::Write(Ok(_)), ControllerEvent::Write(a, p, v)) => {
-                    fb.update_parameter(*a, *p, *v);
-                    if *a == 31 {
-                        write!(msg, "Write {}@{} = {}\r\n", **p, **a, **v);
-                    }
+                    update_event = fb.update_parameter(*a, *p, *v);
+                    write!(msg, "Write {}@{} = {}", **p, **a, **v);
                 }
                 (NodeEvent::Read(Ok(v)), ControllerEvent::Read(a, p)) => {
-                    fb.update_parameter(*a, *p, v);
-                    if *a == 31 {
-                        write!(msg, "Read {}@{} = {}\r\n", **p, **a, *v);
-                    }
+                    update_event = fb.update_parameter(*a, *p, v);
+                    write!(msg, "Read {}@{} = {}", **p, **a, *v);
                 }
                 (NodeEvent::UnexpectedTransmission, _) => {}
                 _ => {}
             },
         }
-        ctx.shared.usb_serial2.lock(|serial| {
-            serial.write(msg.as_bytes());
-            serial.flush();
-        });
+        if !msg.is_empty() {
+            msg.push_str("\r\n");
+
+            ctx.shared.usb_serial2.lock(|serial| {
+                serial.write(msg.as_bytes());
+                serial.flush();
+            });
+        }
+        if let Some(event) = update_event {
+            ctx.shared.display_updates.lock(|disp| match event {
+                UpdateEvent::StowPress(e, w) => {
+                    disp.set_info(Info::StowPressEast(e));
+                    disp.set_info(Info::StowPressWest(w));
+                }
+                UpdateEvent::IoboxInputs(i) => disp.set_info(Info::IoboxInputs(i)),
+                UpdateEvent::IoboxCmd(c) => disp.set_info(Info::IoboxCmd(c)),
+                UpdateEvent::IoboxOutputs(o) => disp.set_info(Info::IoboxOutputs(o)),
+                UpdateEvent::PolarSpeedCmd(s) => disp.set_info(Info::PolarSpeedCmd(s)),
+            });
+        }
     }
 
     // Received from x3.28 node
@@ -369,43 +410,3 @@ mod app {
 }
 
 static BTN_CTR: AtomicU32 = AtomicU32::new(0);
-
-fn r(disp: &mut PicoDisplay) {
-    use embedded_graphics::mono_font::ascii::FONT_10X20;
-    use embedded_graphics::mono_font::MonoTextStyleBuilder;
-    use embedded_graphics::pixelcolor::Rgb565;
-    use embedded_graphics::prelude::*;
-    use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, Triangle};
-    use embedded_graphics::text::{Alignment, Text};
-
-    let screen = &mut disp.screen;
-    // screen.clear(RgbColor::BLUE).unwrap();
-
-    let style = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(Rgb565::GREEN)
-        .background_color(Rgb565::BLACK)
-        .build();
-    let thin_stroke = PrimitiveStyle::with_stroke(Rgb565::GREEN, 1);
-    screen.bounding_box().into_styled(thin_stroke).draw(screen);
-    let x_off = 16;
-    let y_off = 20;
-    Triangle::new(
-        Point::new(x_off + 8, y_off - 16),
-        Point::new(x_off - 8, y_off - 16),
-        Point::new(x_off, y_off),
-    )
-    .into_styled(thin_stroke)
-    .draw(screen);
-
-    let mut strbuf = ArrayString::<100>::new();
-    let presses = BTN_CTR.load(Ordering::Relaxed);
-    write!(&mut strbuf, "{}", presses);
-    Text::with_alignment(
-        strbuf.as_str(), // asd
-        Point::new(15, 35),
-        style,
-        Alignment::Left,
-    )
-    .draw(screen);
-}
