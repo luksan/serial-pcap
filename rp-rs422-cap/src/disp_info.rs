@@ -78,11 +78,30 @@ impl DisplayUpdates {
 
 pub struct BusDisplay {
     screen: picodisplay::Screen,
-    on_screen: [Info; INFO_CNT],
+    on_screen: [(Info, Rectangle); INFO_CNT],
+}
+#[derive(Copy, Clone)]
+struct Row(i32);
+
+const DISP_WIDTH: i32 = 135;
+
+impl Row {
+    fn top_left(self, x: i32) -> Point {
+        Point::new(x, self.0 * BusDisplay::ROW_HEIGHT)
+    }
+    fn bottom_right(self) -> Point {
+        // y -1 since the point is inside the bounding box
+        Point::new(DISP_WIDTH - 1, (self.0 + 1) * BusDisplay::ROW_HEIGHT - 1)
+    }
+    fn baseline(self) -> Point {
+        let y = BusDisplay::FONT.baseline as i32 + self.0 * BusDisplay::ROW_HEIGHT;
+        Point::new(0, y)
+    }
 }
 
 impl BusDisplay {
     const FONT: &'static MonoFont<'static> = &mono_font::ascii::FONT_7X14;
+    const ROW_HEIGHT: i32 = Self::FONT.character_size.height as i32;
 
     const TEXT_STYLE: MonoTextStyle<'static, Rgb565> = MonoTextStyleBuilder::new()
         .font(Self::FONT)
@@ -101,13 +120,14 @@ impl BusDisplay {
     pub fn redraw(&mut self) {
         self.screen.clear(RgbColor::BLUE).unwrap();
         for i in 0..self.on_screen.len() {
-            self.draw_info(self.on_screen[i])
+            self.draw_info(self.on_screen[i].0)
         }
     }
 
     pub fn draw_info(&mut self, info: Info) {
         let mut buf = ArrayString::<100>::new();
         let mut row;
+
         match info {
             Info::StowPressEast(p) => {
                 row = 0;
@@ -142,31 +162,49 @@ impl BusDisplay {
             Info::END => return,
         }
 
+        let top_left = Row(row).top_left(0);
+
         for line in buf.lines().filter(|l| !l.is_empty()) {
-            self.write_row(row, line);
+            self.write_row(Row(row), line);
             row += 1;
         }
+        row -= 1;
+        let bottom_right = Row(row).bottom_right();
 
-        self.on_screen[info.discriminant()] = info;
+        let info_idx = info.discriminant();
+        self.on_screen[info_idx].0 = info;
+        let prev_rect = core::mem::replace(
+            &mut self.on_screen[info_idx].1,
+            Rectangle::with_corners(top_left, bottom_right),
+        );
+
+        // Clear any old lines below, in case of multi-line info text
+        let top_below = Row(row + 1).top_left(0);
+        let bottom_right = prev_rect.bottom_right().unwrap();
+        if top_below.y < bottom_right.y {
+            let to_clear = Rectangle::with_corners(top_below, bottom_right);
+            self.clear_area(to_clear);
+        }
     }
 
-    fn write_row(&mut self, row: i32, text: &str) {
-        let font_height = Self::FONT.character_size.height as i32;
-        let y = Self::FONT.baseline as i32 + row * font_height;
+    fn clear_area(&mut self, rect: Rectangle) {
+        if !rect.is_zero_sized() {
+            rect.draw_styled(&PrimitiveStyle::with_fill(Rgb565::BLUE), &mut self.screen);
+        }
+    }
 
+    fn write_row(&mut self, row: Row, text: &str) {
         let Ok(row_end) =
-            Text::with_alignment(text, Point::new(0, y), Self::TEXT_STYLE, Alignment::Left)
+            Text::with_alignment(text, row.baseline(), Self::TEXT_STYLE, Alignment::Left)
                 .draw(&mut self.screen)
         else {
             return;
         };
         // clear the row end
-        let disp_width = self.screen.bounding_box().size.width;
-        Rectangle::new(
-            Point::new(row_end.x, row_end.y - (Self::FONT.baseline as i32)),
-            Size::new(disp_width, font_height as u32),
-        )
-        .draw_styled(&PrimitiveStyle::with_fill(Rgb565::BLUE), &mut self.screen);
+        self.clear_area(Rectangle::with_corners(
+            row.top_left(row_end.x),
+            row.bottom_right(),
+        ));
     }
 }
 

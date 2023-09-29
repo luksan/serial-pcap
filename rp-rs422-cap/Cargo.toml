@@ -5,7 +5,7 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-x328-proto = {path = "../../rust-x328-proto", default-features = false}
+x328-proto = { version = "0.2.0", default-features = false }
 enumflags2 = "0.7.7"
 
 arrayvec = { version = "0.7.2" , default-features = false }
