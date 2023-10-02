@@ -35,7 +35,7 @@ impl UartBuf {
         if self.is_empty() {
             self.read_pos = 0;
         }
-        let tail_cap = self.data.len() - (self.read_pos + self.len);
+        let tail_cap = self.tail_capacity();
         let tot_spare_cap = tail_cap + self.read_pos;
         if tot_spare_cap < min_cap {
             self.consume(min_cap - tot_spare_cap);
@@ -48,7 +48,12 @@ impl UartBuf {
         &mut self.data[wr_pos..]
     }
 
+    fn tail_capacity(&self) -> usize {
+        self.data.len() - (self.read_pos + self.len)
+    }
+
     pub fn incr_len(&mut self, new: usize) {
+        let new = self.tail_capacity().min(new);
         self.len += new;
     }
 
