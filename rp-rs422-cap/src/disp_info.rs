@@ -180,10 +180,11 @@ impl BusDisplay {
 
         // Clear any old lines below, in case of multi-line info text
         let top_below = Row(row + 1).top_left(0);
-        let bottom_right = prev_rect.bottom_right().unwrap();
-        if top_below.y < bottom_right.y {
-            let to_clear = Rectangle::with_corners(top_below, bottom_right);
-            self.clear_area(to_clear);
+        if let Some(bottom_right) = prev_rect.bottom_right() {
+            if top_below.y < bottom_right.y {
+                let to_clear = Rectangle::with_corners(top_below, bottom_right);
+                self.clear_area(to_clear);
+            }
         }
     }
 
