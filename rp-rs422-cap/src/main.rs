@@ -9,6 +9,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use arrayvec::ArrayString;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::PrimitiveStyle;
+use rp2040_hal::gpio::{FunctionUart, PullNone};
+use rp2040_hal::typelevel::{OptionTNone, OptionTSome};
 use rp_pico::hal::{self, gpio, uart};
 use rp_pico::pac;
 // USB Device support
@@ -18,8 +20,13 @@ use usbd_serial::SerialPort;
 
 use rp_rs422_cap::picodisplay::{self, Buttons, PicoDisplay};
 
-type UartRxPin<P> = gpio::Pin<P, gpio::FunctionUart>;
-type UartDev<D, P> = uart::UartPeripheral<uart::Enabled, D, uart::Pins<(), UartRxPin<P>, (), ()>>;
+type UartRxPin<P> = gpio::Pin<P, gpio::FunctionUart, PullNone>;
+
+type UartDev<D, P> = uart::UartPeripheral<
+    uart::Enabled,
+    D,
+    uart::Pins<OptionTNone, OptionTSome<UartRxPin<P>>, OptionTNone, OptionTNone>,
+>;
 
 type Uart0 = UartDev<pac::UART0, gpio::bank0::Gpio1>;
 type Uart1 = UartDev<pac::UART1, gpio::bank0::Gpio5>;
@@ -36,14 +43,14 @@ mod app {
     use gpio::FunctionSpi;
     use hal::clocks::ClockSource;
     use panic_probe as _;
+    use rp2040_hal::gpio::{FunctionSio, FunctionSioOutput, FunctionUart};
     use rp2040_monotonic::{
         fugit::Duration,
         fugit::RateExtU32, // For .kHz() conversion funcs
         Rp2040Monotonic,
     };
     use rp_pico::hal::{
-        gpio::pin::bank0::{Gpio2, Gpio25, Gpio3},
-        gpio::pin::PushPullOutput,
+        gpio::bank0::{Gpio2, Gpio25, Gpio3},
         pac, pwm,
         sio::Sio,
         Clock, I2C,
@@ -78,7 +85,7 @@ mod app {
     #[local]
     struct Local {
         buttons: Buttons,
-        led: gpio::Pin<Gpio25, PushPullOutput>,
+        led: gpio::Pin<Gpio25, FunctionSioOutput, gpio::PullDown>,
         usb_device: UsbDevice<'static, hal::usb::UsbBus>,
         uart0: Uart0,
         uart1: Uart1,
@@ -137,13 +144,13 @@ mod app {
 
         // Configure the serial UARTs
         let uart0 = uart_setup(
-            rp_pins.gpio1.into_mode(),
+            rp_pins.gpio1,
             pac.UART0,
             &clocks.peripheral_clock,
             &mut pac.RESETS,
         );
         let uart1 = uart_setup(
-            rp_pins.gpio5.into_mode(),
+            rp_pins.gpio5,
             pac.UART1,
             &clocks.peripheral_clock,
             &mut pac.RESETS,
@@ -201,18 +208,16 @@ mod app {
     }
 
     fn uart_setup<D, P>(
-        pin: gpio::Pin<P, gpio::FunctionUart>,
+        pin: gpio::Pin<P, gpio::FunctionNull, gpio::PullDown>,
         dev: D,
         peripheral_clock: &hal::clocks::PeripheralClock,
         resets: &mut pac::RESETS,
     ) -> UartDev<D, P>
     where
         D: uart::UartDevice,
-        P: gpio::PinId + gpio::bank0::BankPinId,
-        gpio::Pin<P, gpio::FunctionUart>: uart::Rx<D>,
+        P: gpio::PinId + uart::ValidPinIdRx<D> + gpio::ValidFunction<gpio::FunctionUart>,
     {
-        // TODO: ValidPinMode should imply PinMode and BankPinId should imply PinId
-        let rx_pin = pin.into_mode::<gpio::FunctionUart>();
+        let rx_pin = pin.into_pull_type().into_function::<gpio::FunctionUart>();
         let uart_config = uart::UartConfig::new(
             9600.Hz(),
             uart::DataBits::Seven,

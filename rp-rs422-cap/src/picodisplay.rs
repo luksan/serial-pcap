@@ -8,10 +8,11 @@ use embedded_hal::spi::MODE_0;
 use embedded_hal::PwmPin;
 use fugit::RateExtU32;
 use mipidsi::{models, Builder, Display};
+use rp2040_hal::gpio::{FunctionNull, FunctionSioOutput, PullDown, PullNone};
 use rp_pico::hal::gpio::bank0::{
     Gpio12, Gpio13, Gpio14, Gpio15, Gpio16, Gpio17, Gpio18, Gpio19, Gpio20, Gpio6, Gpio7, Gpio8,
 };
-use rp_pico::hal::gpio::{self, FunctionSpi, Pin, PullDownDisabled, PullUpInput, PushPullOutput};
+use rp_pico::hal::gpio::{self, FunctionSpi, Pin};
 use rp_pico::hal::{pwm, spi};
 use rp_pico::pac;
 
@@ -28,21 +29,22 @@ impl OutputPin for DummyPin {
 }
 
 pub type Screen = Display<
-    SPIInterface<spi::Spi<spi::Enabled, pac::SPI0, 8>, DC, CS>,
+    SPIInterface<spi::Spi<spi::Enabled, pac::SPI0, (SpiClock, MOSI), 8>, DC, CS>,
     models::ST7789,
     DummyPin, // Reset is connected to RUN on the Pi Pico
 >;
+pub type SpiClock = Pin<Gpio19, FunctionSpi, PullNone>;
+pub type MOSI = Pin<Gpio18, FunctionSpi, PullDown>;
+pub type CS = Pin<Gpio17, FunctionSioOutput, PullNone>;
+pub type DC = Pin<Gpio16, FunctionSioOutput, PullNone>;
 
-pub type CS = Pin<Gpio17, PushPullOutput>;
-pub type DC = Pin<Gpio16, PushPullOutput>;
-
-pub type GpioPin<T> = Pin<T, PullDownDisabled>;
+pub type GpioPin<T> = Pin<T, FunctionNull, PullDown>;
 
 pub struct Buttons {
-    pub a: Pin<Gpio12, PullUpInput>,
-    pub b: Pin<Gpio13, PullUpInput>,
-    pub x: Pin<Gpio14, PullUpInput>,
-    pub y: Pin<Gpio15, PullUpInput>,
+    pub a: GpioPin<Gpio12>,
+    pub b: GpioPin<Gpio13>,
+    pub x: GpioPin<Gpio14>,
+    pub y: GpioPin<Gpio15>,
 }
 
 #[macro_export]
@@ -60,10 +62,10 @@ impl Buttons {
         y: GpioPin<Gpio15>,
     ) -> Self {
         Self {
-            a: a.into_mode(),
-            b: b.into_mode(),
-            x: x.into_mode(),
-            y: y.into_mode(),
+            a: a.into_function(),
+            b: b.into_function(),
+            x: x.into_function(),
+            y: y.into_function(),
         }
     }
 
@@ -180,13 +182,18 @@ impl PicoDisplay {
         resets: &mut pac::RESETS,
         delay: &mut impl DelayUs<u32>,
     ) -> Self {
-        let dc = gpio16.into_push_pull_output();
-        let cs = gpio17.into_push_pull_output();
-        let _spi_sclk = gpio18.into_mode::<FunctionSpi>();
-        let _spi_mosi = gpio19.into_mode::<FunctionSpi>();
-        let mut backlight = gpio20.into_mode::<PushPullOutput>();
+        let dc = gpio16.into_pull_type().into_push_pull_output();
+        let cs = gpio17.into_pull_type().into_push_pull_output();
+        let spi_sclk = gpio18.into_pull_type().into_function::<FunctionSpi>();
+        let spi_mosi = gpio19.into_pull_type().into_function::<FunctionSpi>();
+        let mut backlight = gpio20.into_push_pull_output();
 
-        let spi_screen = spi::Spi::new(spi0).init(resets, 125u32.MHz(), 16u32.MHz(), &MODE_0);
+        let spi_screen = spi::Spi::new(spi0, (spi_mosi, spi_sclk)).init(
+            resets,
+            125u32.MHz(),
+            16u32.MHz(),
+            &MODE_0,
+        );
         let spi_if = SPIInterface::new(spi_screen, dc, cs);
 
         let screen = Builder::st7789_pico1(spi_if).init(delay, None).unwrap();

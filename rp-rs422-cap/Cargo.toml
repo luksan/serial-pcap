@@ -17,9 +17,9 @@ fugit = "0.3.7"
 nb = "1.1.0"
 panic-probe = "0.3.1"
 
-rp-pico = { version = "0.7", features = ["critical-section-impl"] }
-rp2040-monotonic = "=1.2.0" # the rp2040-pac version pulled in by this dep must match the one in rp2040-hal
-rp2040-hal = { version = "0.8.2" }
+rp-pico = { version = "0.8", features = ["critical-section-impl"] }
+rp2040-monotonic = "1.3.0" # the rp2040-pac version pulled in by this dep must match the one in rp2040-hal
+rp2040-hal = { version = "0.9.0" }
 
 mipidsi = "0.7.1"
 display-interface-spi = "0.4.1"
