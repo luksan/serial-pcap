@@ -77,7 +77,6 @@ mod app {
     struct Shared {
         usb_serial: SerialPort<'static, hal::usb::UsbBus>,
         usb_serial2: SerialPort<'static, hal::usb::UsbBus>,
-        picodisplay: disp_info::BusDisplay,
         x328_scanner: scanner::Scanner,
         display_updates: DisplayUpdates,
     }
@@ -85,6 +84,7 @@ mod app {
     #[local]
     struct Local {
         buttons: Buttons,
+        picodisplay: disp_info::BusDisplay,
         led: gpio::Pin<Gpio25, FunctionSioOutput, gpio::PullDown>,
         usb_device: UsbDevice<'static, hal::usb::UsbBus>,
         uart0: Uart0,
@@ -192,12 +192,12 @@ mod app {
             Shared {
                 usb_serial,
                 usb_serial2,
-                picodisplay,
                 x328_scanner: Default::default(),
                 display_updates: DisplayUpdates::new(),
             },
             Local {
                 buttons,
+                picodisplay,
                 led,
                 usb_device,
                 uart0,
@@ -233,14 +233,12 @@ mod app {
         uart
     }
 
-    #[idle(shared = [display_updates, picodisplay])]
+    #[idle(local = [picodisplay], shared = [display_updates])]
     fn idle(mut ctx: idle::Context) -> ! {
         loop {
             let info = ctx.shared.display_updates.lock(|u| u.next_change());
             if let Some(update) = info {
-                ctx.shared.picodisplay.lock(|disp| {
-                    disp.draw_info(update);
-                })
+                ctx.local.picodisplay.draw_info(update);
             }
         }
     }
