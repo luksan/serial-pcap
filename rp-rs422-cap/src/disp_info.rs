@@ -75,10 +75,49 @@ pub struct BusDisplay {
     screen: picodisplay::Screen,
     on_screen: [ScreenItem; INFO_CNT],
 }
+
+pub type Age = i32;
+
 #[derive(Default)]
 struct ScreenItem {
     info: Info,
     area: Rectangle,
+    info_age: Age,
+    style: ItemStyle,
+}
+
+#[derive(Default, Copy, Clone, Eq, PartialEq)]
+enum ItemStyle {
+    Current,
+    Aging,
+    #[default]
+    Old,
+}
+type TextStyle = MonoTextStyle<'static, Rgb565>;
+
+impl ItemStyle {
+    const CURR_STYLE: TextStyle = MonoTextStyleBuilder::new()
+        .font(BusDisplay::FONT)
+        .text_color(Rgb565::GREEN)
+        .background_color(Rgb565::BLACK)
+        .build();
+    const AGING_STYLE: TextStyle = MonoTextStyleBuilder::new()
+        .font(BusDisplay::FONT)
+        .text_color(Rgb565::GREEN)
+        .background_color(Rgb565::YELLOW)
+        .build();
+    const OLD_STYLE: TextStyle = MonoTextStyleBuilder::new()
+        .font(BusDisplay::FONT)
+        .text_color(Rgb565::GREEN)
+        .background_color(Rgb565::RED)
+        .build();
+    fn get_text_style(self) -> TextStyle {
+        match self {
+            ItemStyle::Current => Self::CURR_STYLE,
+            ItemStyle::Aging => Self::AGING_STYLE,
+            ItemStyle::Old => Self::OLD_STYLE,
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -104,12 +143,6 @@ impl BusDisplay {
     const FONT: &'static MonoFont<'static> = &mono_font::ascii::FONT_7X14;
     const ROW_HEIGHT: i32 = Self::FONT.character_size.height as i32;
 
-    const TEXT_STYLE: MonoTextStyle<'static, Rgb565> = MonoTextStyleBuilder::new()
-        .font(Self::FONT)
-        .text_color(Rgb565::GREEN)
-        .background_color(Rgb565::BLACK)
-        .build();
-
     pub fn new(screen: picodisplay::Screen) -> Self {
         Self {
             screen,
@@ -121,13 +154,36 @@ impl BusDisplay {
     pub fn redraw(&mut self) {
         self.screen.clear(RgbColor::BLUE).unwrap();
         for i in 0..self.on_screen.len() {
-            self.draw_info(self.on_screen[i].info)
+            self.draw_info(i)
         }
     }
 
-    pub fn draw_info(&mut self, info: Info) {
+    pub fn check_age(&mut self, current_age: i32) {
+        for idx in 0..self.on_screen.len() {
+            let i = &mut self.on_screen[idx];
+            match (current_age - i.info_age, i.style) {
+                (-1, _) => continue,
+                (0, ItemStyle::Current) | (1, ItemStyle::Aging) | (_, ItemStyle::Old) => continue,
+                (0, _) => i.style = ItemStyle::Current,
+                (1, _) => i.style = ItemStyle::Aging,
+                (_, _) => i.style = ItemStyle::Old,
+            }
+            self.draw_info(idx);
+        }
+    }
+
+    pub fn update_info(&mut self, info: Info, age: Age) {
+        let info_idx = info.discriminant();
+        self.on_screen[info_idx].info = info;
+        self.on_screen[info_idx].style = ItemStyle::Current;
+        self.on_screen[info_idx].info_age = age;
+        self.draw_info(info_idx)
+    }
+
+    fn draw_info(&mut self, info_idx: usize) {
         let mut buf = ArrayString::<100>::new();
         let mut row;
+        let info = &self.on_screen[info_idx].info;
 
         let _write_res = match info {
             Info::StowPressEast(p) => {
@@ -160,14 +216,16 @@ impl BusDisplay {
         let top_left = Row(row).top_left(0);
 
         for line in buf.lines().filter(|l| !l.is_empty()) {
-            self.write_row(Row(row), line);
+            self.write_row(
+                Row(row),
+                line,
+                self.on_screen[info_idx].style.get_text_style(),
+            );
             row += 1;
         }
         row -= 1;
         let bottom_right = Row(row).bottom_right();
 
-        let info_idx = info.discriminant();
-        self.on_screen[info_idx].info = info;
         let prev_rect = core::mem::replace(
             &mut self.on_screen[info_idx].area,
             Rectangle::with_corners(top_left, bottom_right),
@@ -189,10 +247,9 @@ impl BusDisplay {
         }
     }
 
-    fn write_row(&mut self, row: Row, text: &str) {
-        let Ok(row_end) =
-            Text::with_alignment(text, row.baseline(), Self::TEXT_STYLE, Alignment::Left)
-                .draw(&mut self.screen)
+    fn write_row(&mut self, row: Row, text: &str, style: TextStyle) {
+        let Ok(row_end) = Text::with_alignment(text, row.baseline(), style, Alignment::Left)
+            .draw(&mut self.screen)
         else {
             return;
         };

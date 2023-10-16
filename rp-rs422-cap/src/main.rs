@@ -4,6 +4,7 @@
 
 use core::fmt::Write;
 use core::sync::atomic::AtomicU32;
+use core::sync::atomic::Ordering;
 
 use arrayvec::ArrayString;
 use embedded_graphics::prelude::*;
@@ -16,7 +17,7 @@ use usb_device::{class_prelude::*, prelude::*};
 // USB Communications Class Device support
 use usbd_serial::SerialPort;
 
-use rp_rs422_cap::picodisplay::{self, Buttons, PicoDisplay};
+use rp_rs422_cap::picodisplay::{self, Buttons};
 
 type UartRxPin<P> = gpio::Pin<P, gpio::FunctionUart, PullNone>;
 
@@ -34,6 +35,7 @@ mod disp_info;
 #[rtic::app(device = pac, dispatchers = [TIMER_IRQ_1, TIMER_IRQ_2])]
 mod app {
     use core::mem::MaybeUninit;
+    use core::sync::atomic::AtomicI32;
 
     use embedded_graphics::pixelcolor::Rgb888;
     use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
@@ -51,7 +53,7 @@ mod app {
     use x328_proto::scanner::ControllerEvent;
 
     use rp_rs422_cap::x328_bus::{FieldBus, UartBuf, UpdateEvent};
-    use rp_rs422_cap::{create_picodisplay, make_buttons};
+    use rp_rs422_cap::{create_picodisplay, make_buttons, picodisplay::PicoDisplay};
 
     use crate::disp_info::{DisplayUpdates, Info};
 
@@ -226,18 +228,24 @@ mod app {
 
     #[idle(local = [picodisplay], shared = [display_updates])]
     fn idle(mut ctx: idle::Context) -> ! {
+        let disp = ctx.local.picodisplay;
         loop {
+            let age = DISP_AGE.load(Ordering::SeqCst);
             let info = ctx.shared.display_updates.lock(|u| u.next_change());
             if let Some(update) = info {
-                ctx.local.picodisplay.draw_info(update);
+                disp.update_info(update, age + 1);
             }
+            disp.check_age(age);
         }
     }
+    static DISP_AGE: AtomicI32 = AtomicI32::new(0);
 
     #[task(local = [led])]
     fn heartbeat(ctx: heartbeat::Context) {
         // Flicker the built-in LED
         _ = ctx.local.led.toggle();
+        let age = DISP_AGE.load(Ordering::SeqCst);
+        DISP_AGE.store(age + 1, Ordering::SeqCst);
 
         // Re-spawn this task after 1 second
         let one_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS);
