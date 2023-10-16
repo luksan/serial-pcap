@@ -73,8 +73,14 @@ impl DisplayUpdates {
 
 pub struct BusDisplay {
     screen: picodisplay::Screen,
-    on_screen: [(Info, Rectangle); INFO_CNT],
+    on_screen: [ScreenItem; INFO_CNT],
 }
+#[derive(Default)]
+struct ScreenItem {
+    info: Info,
+    area: Rectangle,
+}
+
 #[derive(Copy, Clone)]
 struct Row(i32);
 
@@ -115,7 +121,7 @@ impl BusDisplay {
     pub fn redraw(&mut self) {
         self.screen.clear(RgbColor::BLUE).unwrap();
         for i in 0..self.on_screen.len() {
-            self.draw_info(self.on_screen[i].0)
+            self.draw_info(self.on_screen[i].info)
         }
     }
 
@@ -161,9 +167,9 @@ impl BusDisplay {
         let bottom_right = Row(row).bottom_right();
 
         let info_idx = info.discriminant();
-        self.on_screen[info_idx].0 = info;
+        self.on_screen[info_idx].info = info;
         let prev_rect = core::mem::replace(
-            &mut self.on_screen[info_idx].1,
+            &mut self.on_screen[info_idx].area,
             Rectangle::with_corners(top_left, bottom_right),
         );
 
