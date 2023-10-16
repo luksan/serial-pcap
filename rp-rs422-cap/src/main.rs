@@ -1,15 +1,13 @@
 #![no_std]
 #![no_main]
-#![allow(unused)]
+#![allow(unused_must_use)]
 
 use core::fmt::Write;
-use core::ops::Deref;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::AtomicU32;
 
 use arrayvec::ArrayString;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::PrimitiveStyle;
-use rp2040_hal::gpio::{FunctionUart, PullNone};
+use rp2040_hal::gpio::PullNone;
 use rp2040_hal::typelevel::{OptionTNone, OptionTSome};
 use rp_pico::hal::{self, gpio, uart};
 use rp_pico::pac;
@@ -39,22 +37,15 @@ mod app {
 
     use embedded_graphics::pixelcolor::Rgb888;
     use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
-    use embedded_hal::PwmPin;
-    use gpio::FunctionSpi;
     use hal::clocks::ClockSource;
     use panic_probe as _;
-    use rp2040_hal::gpio::{FunctionSio, FunctionSioOutput, FunctionUart};
+    use rp2040_hal::gpio::FunctionSioOutput;
     use rp2040_monotonic::{
         fugit::Duration,
         fugit::RateExtU32, // For .kHz() conversion funcs
         Rp2040Monotonic,
     };
-    use rp_pico::hal::{
-        gpio::bank0::{Gpio2, Gpio25, Gpio3},
-        pac, pwm,
-        sio::Sio,
-        Clock, I2C,
-    };
+    use rp_pico::hal::{gpio::bank0::Gpio25, pac, pwm, sio::Sio, Clock};
     use rp_pico::XOSC_CRYSTAL_FREQ;
     use x328_proto::scanner;
     use x328_proto::scanner::ControllerEvent;
@@ -62,7 +53,7 @@ mod app {
     use rp_rs422_cap::x328_bus::{FieldBus, UartBuf, UpdateEvent};
     use rp_rs422_cap::{create_picodisplay, make_buttons};
 
-    use crate::disp_info::{r, BusDisplay, DisplayUpdates, Info};
+    use crate::disp_info::{DisplayUpdates, Info};
 
     use super::*;
 
@@ -95,7 +86,7 @@ mod app {
         usb_bus_uninit: MaybeUninit<UsbBusAllocator<hal::usb::UsbBus>> = MaybeUninit::uninit(),
         display_updates: DisplayUpdates = DisplayUpdates::new(),
     ])]
-    fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         let mut pac = ctx.device;
 
         // Configure the clocks, watchdog - The default is to generate a 125 MHz system clock
@@ -139,7 +130,7 @@ mod app {
         let picodisplay = create_picodisplay!(rp_pins, pac, delay);
         let mut picodisplay = disp_info::BusDisplay::new(picodisplay.screen);
 
-        let mut buttons = make_buttons!(rp_pins);
+        let buttons = make_buttons!(rp_pins);
         buttons.enable_interrupts(gpio::Interrupt::EdgeLow, true);
 
         // Configure the serial UARTs
@@ -157,7 +148,7 @@ mod app {
         );
 
         // Set up the USB driver
-        let mut usb_bus_uninit = ctx.local.usb_bus_uninit;
+        let usb_bus_uninit = ctx.local.usb_bus_uninit;
         usb_bus_uninit.write(UsbBusAllocator::new(hal::usb::UsbBus::new(
             pac.USBCTRL_REGS,
             pac.USBCTRL_DPRAM,
@@ -242,8 +233,9 @@ mod app {
             }
         }
     }
+
     #[task(local = [led])]
-    fn heartbeat(mut ctx: heartbeat::Context) {
+    fn heartbeat(ctx: heartbeat::Context) {
         // Flicker the built-in LED
         _ = ctx.local.led.toggle();
 
@@ -272,7 +264,7 @@ mod app {
                     ControllerEvent::Read(a, p) => {
                         write!(msg, "Read cmd: {}@{}", *p, *a);
                     }
-                    ControllerEvent::Write(a, p, v) => {}
+                    ControllerEvent::Write(_a, _p, _v) => {}
                     ControllerEvent::NodeTimeout => match ctrl_ev {
                         ControllerEvent::Write(a, p, v) => {
                             write!(msg, "Write timeout: {}@{} = {}", **p, **a, **v);
@@ -330,15 +322,15 @@ mod app {
                 Err(nb::Error::WouldBlock) => 0,
                 Err(nb::Error::Other(uart::ReadError { discarded, .. })) => discarded.len(),
             };
-            serial.write(&tail[0..len]);
-            serial.flush();
+            let _ = serial.write(&tail[0..len]);
+            let _ = serial.flush();
             buf.incr_len(len);
         });
         ctx.shared.x328_scanner.lock(|s| {
             let (consumed, event) = s.recv_from_node(buf);
             buf.consume(consumed);
             if let Some(event) = event {
-                x328_event_handler::spawn(event.into());
+                let _ = x328_event_handler::spawn(event.into());
             }
         });
     }
@@ -360,8 +352,8 @@ mod app {
         }
 
         ctx.shared.usb_serial.lock(|serial: &mut SerialPort<_>| {
-            serial.write(tail);
-            serial.flush();
+            let _ = serial.write(tail);
+            let _ = serial.flush();
         });
         for b in tail.iter_mut() {
             *b &= 0x7f; // clear bit 8 again
@@ -372,7 +364,7 @@ mod app {
             let (consumed, event) = s.recv_from_ctrl(buf);
             buf.consume(consumed);
             if let Some(event) = event {
-                x328_event_handler::spawn(event.into());
+                let _ = x328_event_handler::spawn(event.into());
             }
         });
     }

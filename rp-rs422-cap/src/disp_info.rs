@@ -1,21 +1,16 @@
 use core::fmt::Write;
-use core::sync::atomic::Ordering;
 
 use arrayvec::ArrayString;
 use embedded_graphics::mono_font;
-use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::{MonoFont, MonoTextStyle, MonoTextStyleBuilder};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, StyledDrawable, Triangle};
+use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, StyledDrawable};
 use embedded_graphics::text::{Alignment, Text};
 use enumflags2::BitFlags;
 
 use rp_rs422_cap::picodisplay;
-use rp_rs422_cap::picodisplay::PicoDisplay;
 use rp_rs422_cap::x328_bus::iobox::{CommandBit, InputBit, OutputBit};
-
-use crate::BTN_CTR;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
@@ -128,39 +123,33 @@ impl BusDisplay {
         let mut buf = ArrayString::<100>::new();
         let mut row;
 
-        match info {
+        let _write_res = match info {
             Info::StowPressEast(p) => {
                 row = 0;
-                write!(&mut buf, "Stow east {p}");
+                write!(&mut buf, "Stow east {p}")
             }
             Info::StowPressWest(p) => {
                 row = 1;
-                write!(&mut buf, "Stow west {p}");
+                write!(&mut buf, "Stow west {p}")
             }
             Info::PolarSpeedCmd(s) => {
                 row = 2;
-                write!(&mut buf, "Pol speed cmd {s}");
+                write!(&mut buf, "Pol speed cmd {s}")
             }
             Info::IoboxCmd(c) => {
                 row = 4;
-                for b in c.iter() {
-                    writeln!(buf, "c {b:?}");
-                }
+                c.iter().try_for_each(|b| writeln!(buf, "c {b:?}"))
             }
             Info::IoboxInputs(i) => {
                 row = 9;
-                for b in i.iter() {
-                    writeln!(buf, "i {b:?}");
-                }
+                i.iter().try_for_each(|b| writeln!(buf, "i {b:?}"))
             }
             Info::IoboxOutputs(o) => {
                 row = 15;
-                for b in o.iter() {
-                    writeln!(buf, "o {b:?}");
-                }
+                o.iter().try_for_each(|b| writeln!(buf, "o {b:?}"))
             }
             Info::END => return,
-        }
+        };
 
         let top_left = Row(row).top_left(0);
 
@@ -190,7 +179,7 @@ impl BusDisplay {
 
     fn clear_area(&mut self, rect: Rectangle) {
         if !rect.is_zero_sized() {
-            rect.draw_styled(&PrimitiveStyle::with_fill(Rgb565::BLUE), &mut self.screen);
+            let _ = rect.draw_styled(&PrimitiveStyle::with_fill(Rgb565::BLUE), &mut self.screen);
         }
     }
 
@@ -207,37 +196,4 @@ impl BusDisplay {
             row.bottom_right(),
         ));
     }
-}
-
-pub fn r(disp: &mut PicoDisplay) {
-    let screen = &mut disp.screen;
-    // screen.clear(RgbColor::BLUE).unwrap();
-
-    let style = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(Rgb565::GREEN)
-        .background_color(Rgb565::BLACK)
-        .build();
-    let thin_stroke = PrimitiveStyle::with_stroke(Rgb565::GREEN, 1);
-    screen.bounding_box().into_styled(thin_stroke).draw(screen);
-    let x_off = 16;
-    let y_off = 20;
-    Triangle::new(
-        Point::new(x_off + 8, y_off - 16),
-        Point::new(x_off - 8, y_off - 16),
-        Point::new(x_off, y_off),
-    )
-    .into_styled(thin_stroke)
-    .draw(screen);
-
-    let mut strbuf = ArrayString::<100>::new();
-    let presses = BTN_CTR.load(Ordering::Relaxed);
-    write!(&mut strbuf, "{}", presses);
-    Text::with_alignment(
-        strbuf.as_str(), // asd
-        Point::new(15, 35),
-        style,
-        Alignment::Left,
-    )
-    .draw(screen);
 }
