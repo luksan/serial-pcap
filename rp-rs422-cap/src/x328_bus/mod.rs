@@ -1,10 +1,12 @@
 use core::ops::Deref;
 use enumflags2::BitFlags;
 
+use crate::x328_bus::encoders::{Declination, Encoder, Polar};
 use crate::x328_bus::iobox::{CommandBit, InputBit, OutputBit};
 use iobox::IoBox;
 use x328_proto::{addr, Address, Parameter, Value};
 
+pub mod encoders;
 pub mod iobox;
 
 #[derive(Default)]
@@ -85,8 +87,11 @@ impl UartBuf {
 }
 
 // Tracks all the nodes on the bus in the 25m
+#[derive(Default)]
 pub struct FieldBus {
     pub iobox: IoBox,
+    pub pol_enc: Encoder<Polar>,
+    pub decl_enc: Encoder<Declination>,
 }
 
 pub enum UpdateEvent {
@@ -95,18 +100,24 @@ pub enum UpdateEvent {
     IoboxCmd(BitFlags<CommandBit>),
     IoboxOutputs(BitFlags<OutputBit>),
     PolarSpeedCmd(u16),
+    PolarEncoder(i32),
+    DeclinationEncoder(i32),
 }
 
 impl FieldBus {
     pub const fn new() -> Self {
         Self {
             iobox: IoBox::new(),
+            pol_enc: Encoder::new(),
+            decl_enc: Encoder::new(),
         }
     }
     pub fn update_parameter(&mut self, a: Address, p: Parameter, v: Value) -> Option<UpdateEvent> {
         const POL_DRV: Address = addr(11);
         match a {
             IoBox::ADDR => self.iobox.update_parameter(p, v),
+            Encoder::<Polar>::ADDR => self.pol_enc.update_parameter(p, v),
+            Encoder::<Declination>::ADDR => self.decl_enc.update_parameter(p, v),
             POL_DRV => match *p {
                 118 => Some(UpdateEvent::PolarSpeedCmd(*v as u16)),
                 _ => None,

@@ -313,6 +313,8 @@ mod app {
                 UpdateEvent::IoboxCmd(c) => disp.set_info(Info::IoboxCmd(c)),
                 UpdateEvent::IoboxOutputs(o) => disp.set_info(Info::IoboxOutputs(o)),
                 UpdateEvent::PolarSpeedCmd(s) => disp.set_info(Info::PolarSpeedCmd(s)),
+                UpdateEvent::PolarEncoder(v) => disp.set_info(Info::PolEncVal(v)),
+                UpdateEvent::DeclinationEncoder(v) => disp.set_info(Info::DeclEncVal(v)),
             });
         }
     }

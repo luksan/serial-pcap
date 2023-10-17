@@ -72,7 +72,7 @@ pub enum InputBit {
     EastStowLocked = 1 << 0,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct IoBox {
     pub inputs: BitFlags<InputBit>,
     pub outputs: BitFlags<OutputBit>,

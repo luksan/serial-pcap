@@ -21,6 +21,8 @@ pub enum Info {
     IoboxCmd(BitFlags<CommandBit>),
     IoboxInputs(BitFlags<InputBit>),
     IoboxOutputs(BitFlags<OutputBit>),
+    PolEncVal(i32),
+    DeclEncVal(i32),
     #[default]
     END,
 }
@@ -198,8 +200,16 @@ impl BusDisplay {
                 row = 2;
                 write!(&mut buf, "Pol speed cmd {s}")
             }
-            Info::IoboxCmd(c) => {
+            Info::DeclEncVal(v) => {
+                row = 3;
+                write!(&mut buf, "Decl enc: {}.{}", v / 100, v % 100)
+            }
+            Info::PolEncVal(v) => {
                 row = 4;
+                write!(&mut buf, "Pol enc: {}.{}", v / 100, v % 100)
+            }
+            Info::IoboxCmd(c) => {
+                row = 5;
                 c.iter().try_for_each(|b| writeln!(buf, "c {b:?}"))
             }
             Info::IoboxInputs(i) => {
