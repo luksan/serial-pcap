@@ -84,8 +84,8 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
                 while !buf.is_empty() {
                     let ch = buf[0] & 0x80;
                     let ch_name = match ch == 0x80 {
-                        true => UartTxChannel::Node,
-                        false => UartTxChannel::Ctrl,
+                        false => UartTxChannel::Node,
+                        true => UartTxChannel::Ctrl,
                     };
 
                     let l = buf.iter().take_while(|&b| b & 0x80 == ch).count();
@@ -136,7 +136,14 @@ async fn record_streams<W: std::io::Write>(
         };
 
         // destructure the received message, or stop if the tx side is closed
-        let Some(UartData{ch_name, data, time_received}) = msg else { return Ok(()); };
+        let Some(UartData {
+            ch_name,
+            data,
+            time_received,
+        }) = msg
+        else {
+            return Ok(());
+        };
         if buf.is_empty() {
             time = time_received;
             prev_ch = ch_name;
