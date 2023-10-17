@@ -38,6 +38,7 @@ impl NodeMirror for Encoder<Polar> {
         .into()
     }
 }
+
 impl NodeMirror for Encoder<Declination> {
     const ADDR: Address = addr(22);
 

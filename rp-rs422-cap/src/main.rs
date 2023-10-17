@@ -162,15 +162,15 @@ mod app {
         let usb_bus = unsafe { usb_bus_uninit.assume_init_ref() };
 
         // Set up the USB Communications Class Device driver
-        let usb_serial = SerialPort::new(usb_bus);
         let usb_serial2 = SerialPort::new(usb_bus);
+        let usb_serial = SerialPort::new(usb_bus);
 
         // Create a USB device with a fake VID and PID
         let usb_device = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x16c0, 0x27dd))
             .manufacturer("Fake company")
             .product("Serial port")
             .serial_number("TEST")
-            .device_class(2) // from: https://www.usb.org/defined-class-codes
+            .device_class(usbd_serial::USB_CLASS_CDC) // from: https://www.usb.org/defined-class-codes
             .build();
 
         let monotonic = Rp2040Mono::new(pac.TIMER);
@@ -391,12 +391,12 @@ mod app {
         let usb_serial2 = ctx.shared.usb_serial2;
         // Poll the USB driver with all of our supported USB Classes
         let mut ready = false;
-        (serial, usb_serial2).lock(|serial: &mut SerialPort<_>, usb_serial2| {
-            ready = usb_device.poll(&mut [serial, usb_serial2]);
+        (serial, usb_serial2).lock(|ser1: &mut SerialPort<_>, ser2| {
+            ready = usb_device.poll(&mut [ser2, ser1]);
             if ready {
                 let mut buf = [0u8; 0];
-                serial.read(&mut buf);
-                usb_serial2.read(&mut buf);
+                ser1.read(&mut buf);
+                ser2.read(&mut buf);
             }
         });
     }
