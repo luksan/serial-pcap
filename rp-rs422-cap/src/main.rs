@@ -268,29 +268,28 @@ mod app {
         let mut update_event = None;
         match ev {
             Event::Ctrl(ev) => {
-                match ev {
-                    ControllerEvent::Read(a, p) => {
-                        write!(msg, "Read cmd: {}@{}", *p, *a);
-                    }
-                    ControllerEvent::Write(_a, _p, _v) => {}
-                    ControllerEvent::NodeTimeout => match ctrl_ev {
+                if matches!(ev, ControllerEvent::NodeTimeout) {
+                    match ctrl_ev {
                         ControllerEvent::Write(a, p, v) => {
-                            write!(msg, "Write timeout: {}@{} = {}", **p, **a, **v);
+                            write!(msg, "Timeout node {} write param {} = {}", **a, **p, **v);
                             update_event = fb.update_parameter(*a, *p, *v);
                         }
+                        ControllerEvent::Read(a, p) => {
+                            write!(msg, "Timeout node {} read param {}", **a, **p);
+                        }
                         _ => {}
-                    },
+                    }
                 }
                 *ctrl_ev = ev;
             }
             Event::Node(ev) => match (ev, ctrl_ev) {
                 (NodeEvent::Write(Ok(_)), ControllerEvent::Write(a, p, v)) => {
                     update_event = fb.update_parameter(*a, *p, *v);
-                    write!(msg, "Write {}@{} = {}", **p, **a, **v);
+                    write!(msg, "Node {} write ok {} = {}", **a, **p, **v);
                 }
                 (NodeEvent::Read(Ok(v)), ControllerEvent::Read(a, p)) => {
                     update_event = fb.update_parameter(*a, *p, v);
-                    write!(msg, "Read {}@{} = {}", **p, **a, *v);
+                    write!(msg, "Node {} read ok {} == {}", **a, **p, *v);
                 }
                 (NodeEvent::UnexpectedTransmission, _) => {}
                 _ => {}
