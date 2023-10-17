@@ -8,7 +8,7 @@ use embedded_hal::spi::MODE_0;
 use embedded_hal::PwmPin;
 use fugit::RateExtU32;
 use mipidsi::{models, Builder, Display};
-use rp2040_hal::gpio::{FunctionNull, FunctionSioOutput, PullDown, PullNone};
+use rp2040_hal::gpio::{FunctionNull, FunctionSioOutput, PullDown, PullNone, PullUp};
 use rp_pico::hal::gpio::bank0::{
     Gpio12, Gpio13, Gpio14, Gpio15, Gpio16, Gpio17, Gpio18, Gpio19, Gpio20, Gpio6, Gpio7, Gpio8,
 };
@@ -38,13 +38,13 @@ pub type MOSI = Pin<Gpio18, FunctionSpi, PullDown>;
 pub type CS = Pin<Gpio17, FunctionSioOutput, PullNone>;
 pub type DC = Pin<Gpio16, FunctionSioOutput, PullNone>;
 
-pub type GpioPin<T> = Pin<T, FunctionNull, PullDown>;
+pub type GpioPin<T, Pull = PullDown> = Pin<T, FunctionNull, Pull>;
 
 pub struct Buttons {
-    pub a: GpioPin<Gpio12>,
-    pub b: GpioPin<Gpio13>,
-    pub x: GpioPin<Gpio14>,
-    pub y: GpioPin<Gpio15>,
+    pub a: GpioPin<Gpio12, PullUp>,
+    pub b: GpioPin<Gpio13, PullUp>,
+    pub x: GpioPin<Gpio14, PullUp>,
+    pub y: GpioPin<Gpio15, PullUp>,
 }
 
 #[macro_export]
@@ -62,10 +62,10 @@ impl Buttons {
         y: GpioPin<Gpio15>,
     ) -> Self {
         Self {
-            a: a.into_function(),
-            b: b.into_function(),
-            x: x.into_function(),
-            y: y.into_function(),
+            a: a.into_pull_type(),
+            b: b.into_pull_type(),
+            x: x.into_pull_type(),
+            y: y.into_pull_type(),
         }
     }
 
