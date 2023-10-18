@@ -12,7 +12,7 @@ use tokio::time::timeout;
 use tokio_serial::SerialStream;
 use tracing::{info, trace, Level};
 
-use serial_pcap::{open_async_uart, SerialPacketWriter, UartTxChannel};
+use serial_pcap::{open_async_uart, SerialPacketWriter, UartTxChannel, TRIG_BYTE};
 
 #[derive(Parser, Debug)]
 struct CmdlineOpts {
@@ -71,7 +71,7 @@ async fn read_uart(
 
 async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) -> Result<()> {
     let mut buf = BytesMut::with_capacity(1);
-    loop {
+    'read: loop {
         buf.reserve(1);
         match uart.read_buf(&mut buf).await {
             Ok(0) => {
@@ -82,7 +82,10 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
                 let time_received = std::time::SystemTime::now();
                 // trace!("Received {_len} bytes.");
                 while !buf.is_empty() {
-                    let ch = buf[0] & 0x80;
+                    let Some(byte) = buf.iter().find(|&&b| b != TRIG_BYTE) else {
+                        continue 'read;
+                    };
+                    let ch = *byte & 0x80;
                     let ch_name = match ch == 0x80 {
                         false => UartTxChannel::Node,
                         true => UartTxChannel::Ctrl,
@@ -91,9 +94,12 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
                     // \n == Trigger event
                     let l = buf
                         .iter()
-                        .take_while(|&b| b & 0x80 == ch || *b == b'\n')
+                        .take_while(|&b| b & 0x80 == ch || *b == TRIG_BYTE)
                         .count();
                     let mut data = buf.split_to(l);
+                    if data.as_ref().contains(&TRIG_BYTE) {
+                        info!("Trigger found in data stream");
+                    }
                     data.iter_mut().for_each(|b| *b &= 0x7f); // clear bit 8
                     tx.send(UartData {
                         ch_name,
@@ -104,7 +110,7 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
             }
             err => {
                 info!("UART read returned with error {err:?}");
-                err.with_context(|| format!("Read error from muxed UART."))?;
+                err.with_context(|| "Read error from muxed UART.".to_string())?;
             }
         }
     }

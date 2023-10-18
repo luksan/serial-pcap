@@ -28,6 +28,8 @@ pub enum UartTxChannel {
 const CTRL: u16 = UartTxChannel::Ctrl as _;
 const NODE: u16 = UartTxChannel::Node as _;
 
+pub const TRIG_BYTE: u8 = b'\n';
+
 impl SerialPacketWriter<File> {
     pub fn new_file(filename: impl AsRef<Path>) -> Result<Self> {
         let filename = filename.as_ref();
@@ -129,11 +131,15 @@ impl<R: std::io::Read> SerialPacketReader<R> {
     }
 
     pub fn next_packet(&mut self) -> Result<Option<SerialPacket>> {
-        let Some(pkt) = self.pcap_reader.next().context("Pcap read error")? else { return Ok(None) };
+        let Some(pkt) = self.pcap_reader.next().context("Pcap read error")? else {
+            return Ok(None);
+        };
         let time = chrono::DateTime::from(pkt.time);
         assert_eq!(pkt.orig_len, pkt.data.len());
         let pkt = SlicedPacket::from_ip(pkt.data).context("Failed to slice packet")?;
-        let Some(TransportSlice::Udp(udp_hdr)) = pkt.transport else { bail!("Failed to find UDP header in pkt.")};
+        let Some(TransportSlice::Udp(udp_hdr)) = pkt.transport else {
+            bail!("Failed to find UDP header in pkt.")
+        };
         let source_port = udp_hdr.source_port();
         let ch = match source_port {
             CTRL => UartTxChannel::Ctrl,
@@ -165,7 +171,9 @@ impl<R: std::io::Read> SerialPacketReader<R> {
     }
 
     fn extend_one_pkt(&mut self) -> Result<bool> {
-        let Some(pkt) = self.next_packet()? else { return Ok(false) };
+        let Some(pkt) = self.next_packet()? else {
+            return Ok(false);
+        };
         let buf = match pkt.ch {
             UartTxChannel::Ctrl => &mut self.ctrl_buf,
             UartTxChannel::Node => &mut self.node_buf,

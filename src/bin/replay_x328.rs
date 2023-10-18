@@ -1,13 +1,14 @@
 #![allow(dead_code)]
 
 use anyhow::{bail, Context, Result};
+use bytes::BytesMut;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 
 use x328_proto::scanner::{ControllerEvent, NodeEvent};
 use x328_proto::{Address, Parameter, Value};
 
-use serial_pcap::{SerialPacketReader, UartTxChannel};
+use serial_pcap::{SerialPacketReader, UartTxChannel, TRIG_BYTE};
 
 #[derive(Copy, Clone, Debug)]
 enum BusCommand {
@@ -21,8 +22,36 @@ enum BusCommand {
         value: Value,
     },
 }
-fn trigger_split(data: &[u8]) -> Vec<&[u8]> {
-    data.split(|b| *b == b'\n').collect()
+
+struct DataWithTrigger {
+    data: BytesMut,
+}
+
+impl DataWithTrigger {
+    fn new(data: BytesMut) -> Self {
+        Self { data }
+    }
+    fn as_slice(&self) -> &[u8] {
+        self.data
+            .as_ref()
+            .split(|&b| b == TRIG_BYTE)
+            .next()
+            .unwrap()
+    }
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+    fn consume(&mut self, len: usize) -> BytesMut {
+        self.data.split_to(len)
+    }
+    fn check_trigger(&mut self) -> bool {
+        let Some(trig_pos) = self.data.iter().position(|&b| b == TRIG_BYTE) else {
+            return false;
+        };
+        let tail = self.data.split_off(trig_pos).split_off(1);
+        self.data.unsplit(tail);
+        true
+    }
 }
 
 fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) -> Result<()> {
@@ -35,24 +64,46 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
         let Some(pkt) = pkt_iter.next().transpose()? else {
             return Ok(());
         };
-        let data = trigger_split(pkt.data.as_ref()).concat();
-        let mut data = data.as_slice();
+        let mut data = DataWithTrigger::new(pkt.data);
 
         match pkt.ch {
             UartTxChannel::Ctrl => {
                 while !data.is_empty() {
-                    let (consumed, event) = scanner.recv_from_ctrl(data.as_ref());
-                    let (_, tail) = data.split_at(consumed);
-                    data = tail;
+                    let slice = data.as_slice();
+                    if slice.is_empty() {
+                        if data.check_trigger() {
+                            println!("Trigger event");
+                            continue;
+                        }
+                        panic!("Empty data slice without trigger.")
+                    }
+                    let (consumed, event) = scanner.recv_from_ctrl(slice);
+                    let consumed = data.consume(consumed);
                     ctrl_event = event;
                     ctrl_time = pkt.time;
+                    if ctrl_event.is_none() {
+                        if data.check_trigger() {
+                            println!("Trigger event");
+                            continue;
+                        }
+                        println!("Consumed without event {consumed:?}");
+                        println!("Trailing data in ctrl packet. {:?}", data.as_slice());
+                        continue 'next_packet;
+                    }
                 }
             }
             UartTxChannel::Node => {
                 while !data.is_empty() {
-                    let (consumed, event) = scanner.recv_from_node(data.as_ref());
-                    let (consumed, tail) = data.split_at(consumed);
-                    data = tail;
+                    let slice = data.as_slice();
+                    if slice.is_empty() {
+                        if data.check_trigger() {
+                            println!("Trigger event");
+                            continue;
+                        }
+                        panic!("Empty data slice without trigger.");
+                    }
+                    let (consumed, event) = scanner.recv_from_node(slice);
+                    let consumed = data.consume(consumed);
                     if let Some(event) = event {
                         print!("cmd time: {ctrl_time} ");
                         print!("resp time {} ", pkt.time);
@@ -77,6 +128,10 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                             _ => {}
                         }
                     } else {
+                        if data.check_trigger() {
+                            println!("Trigger event");
+                            continue;
+                        }
                         println!("Not enough data in node ch packet.");
                         continue 'next_packet;
                     }
