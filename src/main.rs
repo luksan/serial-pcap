@@ -88,7 +88,11 @@ async fn read_muxed_uart(mut uart: SerialStream, tx: UnboundedSender<UartData>) 
                         true => UartTxChannel::Ctrl,
                     };
 
-                    let l = buf.iter().take_while(|&b| b & 0x80 == ch).count();
+                    // \n == Trigger event
+                    let l = buf
+                        .iter()
+                        .take_while(|&b| b & 0x80 == ch || *b == b'\n')
+                        .count();
                     let mut data = buf.split_to(l);
                     data.iter_mut().for_each(|b| *b &= 0x7f); // clear bit 8
                     tx.send(UartData {

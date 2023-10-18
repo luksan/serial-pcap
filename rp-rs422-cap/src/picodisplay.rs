@@ -8,7 +8,9 @@ use embedded_hal::spi::MODE_0;
 use embedded_hal::PwmPin;
 use fugit::RateExtU32;
 use mipidsi::{models, Builder, Display};
-use rp2040_hal::gpio::{FunctionNull, FunctionSioOutput, PullDown, PullNone, PullUp};
+use rp2040_hal::gpio::{
+    FunctionNull, FunctionSio, FunctionSioOutput, PullDown, PullNone, PullUp, SioInput,
+};
 use rp_pico::hal::gpio::bank0::{
     Gpio12, Gpio13, Gpio14, Gpio15, Gpio16, Gpio17, Gpio18, Gpio19, Gpio20, Gpio6, Gpio7, Gpio8,
 };
@@ -40,11 +42,12 @@ pub type DC = Pin<Gpio16, FunctionSioOutput, PullNone>;
 
 pub type GpioPin<T, Pull = PullDown> = Pin<T, FunctionNull, Pull>;
 
+pub type ButtonPin<P> = Pin<P, FunctionSio<SioInput>, PullUp>;
 pub struct Buttons {
-    pub a: GpioPin<Gpio12, PullUp>,
-    pub b: GpioPin<Gpio13, PullUp>,
-    pub x: GpioPin<Gpio14, PullUp>,
-    pub y: GpioPin<Gpio15, PullUp>,
+    pub a: ButtonPin<Gpio12>,
+    pub b: ButtonPin<Gpio13>,
+    pub x: ButtonPin<Gpio14>,
+    pub y: ButtonPin<Gpio15>,
 }
 
 #[macro_export]
@@ -62,18 +65,26 @@ impl Buttons {
         y: GpioPin<Gpio15>,
     ) -> Self {
         Self {
-            a: a.into_pull_type(),
-            b: b.into_pull_type(),
-            x: x.into_pull_type(),
-            y: y.into_pull_type(),
+            a: a.into_pull_type().into_function(),
+            b: b.into_pull_type().into_function(),
+            x: x.into_pull_type().into_function(),
+            y: y.into_pull_type().into_function(),
         }
     }
 
-    pub fn enable_interrupts(&self, kind: gpio::Interrupt, enabled: bool) {
+    pub fn enable_interrupts(&self, enabled: bool) {
+        let kind = gpio::Interrupt::EdgeLow;
         self.a.set_interrupt_enabled(kind, enabled);
         self.b.set_interrupt_enabled(kind, enabled);
         self.x.set_interrupt_enabled(kind, enabled);
         self.y.set_interrupt_enabled(kind, enabled);
+    }
+
+    pub fn clear_interrupts(&mut self) {
+        self.a.clear_interrupt(gpio::Interrupt::EdgeLow);
+        self.b.clear_interrupt(gpio::Interrupt::EdgeLow);
+        self.x.clear_interrupt(gpio::Interrupt::EdgeLow);
+        self.y.clear_interrupt(gpio::Interrupt::EdgeLow);
     }
 }
 

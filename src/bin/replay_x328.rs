@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use std::borrow::Cow;
 use std::iter::Peekable;
 
 use x328_proto::master::SendData;
@@ -23,6 +24,9 @@ enum BusCommand {
         value: Value,
     },
 }
+fn trigger_split(data: &[u8]) -> Vec<&[u8]> {
+    data.split(|b| *b == b'\n').collect()
+}
 
 fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) -> Result<()> {
     let pkt_iter = &mut uart_reader.peekable();
@@ -37,6 +41,7 @@ fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) ->
                     return Ok(());
                 };
                 let data: &[u8] = pkt.data.as_ref();
+                let data = trigger_split(data).concat();
                 if pkt.ch == UartTxChannel::Node {
                     // A node transmitted unexpectedly
                     println!("Unexpected data on node tx channel {data:?}");

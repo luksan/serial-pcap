@@ -38,10 +38,10 @@ mod app {
     use core::sync::atomic::AtomicI32;
 
     use embedded_graphics::pixelcolor::Rgb888;
-    use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
+    use embedded_hal::digital::v2::{InputPin, OutputPin, ToggleableOutputPin};
     use hal::clocks::ClockSource;
     use panic_probe as _;
-    use rp2040_hal::gpio::FunctionSioOutput;
+    use rp2040_hal::gpio::{FunctionSio, FunctionSioOutput, SioOutput};
     use rp2040_monotonic::{
         fugit::Duration,
         fugit::RateExtU32, // For .kHz() conversion funcs
@@ -82,6 +82,7 @@ mod app {
         usb_device: UsbDevice<'static, hal::usb::UsbBus>,
         uart0: Uart0,
         uart1: Uart1,
+        pin_gp9: gpio::Pin<gpio::bank0::Gpio9, FunctionSio<SioOutput>, PullNone>,
     }
 
     #[init(local=[
@@ -133,7 +134,8 @@ mod app {
         let mut picodisplay = disp_info::BusDisplay::new(picodisplay.screen);
 
         let buttons = make_buttons!(rp_pins);
-        buttons.enable_interrupts(gpio::Interrupt::EdgeLow, true);
+        let pin_gp9 = rp_pins.gpio9.into_pull_type().into_function();
+        buttons.enable_interrupts(true);
 
         // Configure the serial UARTs
         let uart0 = uart_setup(
@@ -195,6 +197,7 @@ mod app {
                 usb_device,
                 uart0,
                 uart1,
+                pin_gp9,
             },
             init::Monotonics(monotonic),
         )
@@ -230,7 +233,7 @@ mod app {
     fn idle(mut ctx: idle::Context) -> ! {
         let disp = ctx.local.picodisplay;
         loop {
-            let age = DISP_AGE.load(Ordering::SeqCst);
+            let age = SECONDS.load(Ordering::SeqCst);
             let info = ctx.shared.display_updates.lock(|u| u.next_change());
             if let Some(update) = info {
                 disp.update_info(update, age + 1);
@@ -238,14 +241,14 @@ mod app {
             disp.check_age(age);
         }
     }
-    static DISP_AGE: AtomicI32 = AtomicI32::new(0);
+    static SECONDS: AtomicI32 = AtomicI32::new(0);
 
     #[task(local = [led])]
     fn heartbeat(ctx: heartbeat::Context) {
         // Flicker the built-in LED
         _ = ctx.local.led.toggle();
-        let age = DISP_AGE.load(Ordering::SeqCst);
-        DISP_AGE.store(age + 1, Ordering::SeqCst);
+        let age = SECONDS.load(Ordering::SeqCst);
+        SECONDS.store(age + 1, Ordering::SeqCst);
 
         // Re-spawn this task after 1 second
         let one_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS);
@@ -319,6 +322,30 @@ mod app {
         }
     }
 
+    #[task(local = [last_trig_time: i32 = 0, pin_gp9], shared = [usb_serial, usb_serial2])]
+    fn meas_trigger(ctx: meas_trigger::Context) {
+        let prev_trig = ctx.local.last_trig_time;
+        let mut usb_events = ctx.shared.usb_serial2;
+        let mut usb_bytes = ctx.shared.usb_serial;
+        let trig_pin = ctx.local.pin_gp9;
+
+        let now = SECONDS.load(Ordering::SeqCst);
+        if now < *prev_trig + 2 {
+            return; // at least two second delay between triggers
+        }
+        trig_pin.set_high();
+        *prev_trig = now;
+        usb_bytes.lock(|usb| {
+            usb.write(b"\n");
+            usb.flush();
+        });
+        usb_events.lock(|usb| {
+            usb.write(b"Trigger event\r\n");
+            usb.flush();
+        });
+        trig_pin.set_low();
+    }
+
     // Received from x3.28 node
     #[task(binds = UART0_IRQ, priority = 2, local = [uart0, buf: UartBuf = UartBuf::new()], shared = [usb_serial, x328_scanner])]
     fn uart0_irq(mut ctx: uart0_irq::Context) {
@@ -345,7 +372,7 @@ mod app {
     }
 
     // Received from bus controller
-    #[task(binds = UART1_IRQ, priority = 1, local = [uart1, buf: UartBuf = UartBuf::new()], shared = [usb_serial, x328_scanner])]
+    #[task(binds = UART1_IRQ, priority = 2, local = [uart1, buf: UartBuf = UartBuf::new()], shared = [usb_serial, x328_scanner])]
     fn uart1_irq(mut ctx: uart1_irq::Context) {
         let uart: &mut Uart1 = ctx.local.uart1;
         let buf = ctx.local.buf;
@@ -403,14 +430,15 @@ mod app {
 
     #[task(binds = IO_IRQ_BANK0, priority = 1, local = [buttons])]
     fn button_irq(ctx: button_irq::Context) {
+        let b = ctx.local.buttons;
         use core::sync::atomic::Ordering;
-        ctx.local
-            .buttons
-            .a
-            .clear_interrupt(gpio::Interrupt::EdgeLow);
-        let x = BTN_CTR.load(Ordering::Relaxed);
-        BTN_CTR.store(x + 1, Ordering::Relaxed);
+        b.clear_interrupts();
+        if b.x.is_low().unwrap() {
+            let x = BTN_X_CTR.load(Ordering::Relaxed);
+            BTN_X_CTR.store(x + 1, Ordering::Relaxed);
+            meas_trigger::spawn();
+        }
     }
 }
 
-static BTN_CTR: AtomicU32 = AtomicU32::new(0);
+static BTN_X_CTR: AtomicU32 = AtomicU32::new(0);
