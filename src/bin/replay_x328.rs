@@ -3,14 +3,11 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use std::borrow::Cow;
-use std::iter::Peekable;
 
-use x328_proto::master::SendData;
-use x328_proto::node::Node;
-use x328_proto::{addr, master, Address, NodeState, Parameter, Value};
+use x328_proto::scanner::{ControllerEvent, NodeEvent};
+use x328_proto::{Address, Parameter, Value};
 
-use serial_pcap::{SerialPacket, SerialPacketReader, UartTxChannel};
+use serial_pcap::{SerialPacketReader, UartTxChannel};
 
 #[derive(Copy, Clone, Debug)]
 enum BusCommand {
@@ -29,103 +26,63 @@ fn trigger_split(data: &[u8]) -> Vec<&[u8]> {
 }
 
 fn parse_x328_uart<R: std::io::Read>(uart_reader: &mut SerialPacketReader<R>) -> Result<()> {
-    let pkt_iter = &mut uart_reader.peekable();
+    let pkt_iter = uart_reader;
 
-    let mut ctrl = master::Master::new();
-    let mut node = Node::new(addr(0));
-    let mut token = node.reset();
-    loop {
-        match node.state(token) {
-            NodeState::ReceiveData(r) => {
-                let Some(pkt) = pkt_iter.next().transpose()? else {
-                    return Ok(());
-                };
-                let data: &[u8] = pkt.data.as_ref();
-                let data = trigger_split(data).concat();
-                if pkt.ch == UartTxChannel::Node {
-                    // A node transmitted unexpectedly
-                    println!("Unexpected data on node tx channel {data:?}");
-                    token = node.reset();
-                    loop {
-                        // resync
-                        match pkt_iter.peek() {
-                            None => return Ok(()),
-                            Some(Ok(SerialPacket {
-                                ch: UartTxChannel::Ctrl,
-                                data,
-                                ..
-                            })) if data[0] == 0x04 => break,
+    let mut scanner = x328_proto::scanner::Scanner::new();
+    let mut ctrl_event = None;
+    let mut ctrl_time: DateTime<Utc> = DateTime::default();
+    'next_packet: loop {
+        let Some(pkt) = pkt_iter.next().transpose()? else {
+            return Ok(());
+        };
+        let data = trigger_split(pkt.data.as_ref()).concat();
+        let mut data = data.as_slice();
+
+        match pkt.ch {
+            UartTxChannel::Ctrl => {
+                while !data.is_empty() {
+                    let (consumed, event) = scanner.recv_from_ctrl(data.as_ref());
+                    let (_, tail) = data.split_at(consumed);
+                    data = tail;
+                    ctrl_event = event;
+                    ctrl_time = pkt.time;
+                }
+            }
+            UartTxChannel::Node => {
+                while !data.is_empty() {
+                    let (consumed, event) = scanner.recv_from_node(data.as_ref());
+                    let (consumed, tail) = data.split_at(consumed);
+                    data = tail;
+                    if let Some(event) = event {
+                        print!("cmd time: {ctrl_time} ");
+                        print!("resp time {} ", pkt.time);
+                        match event {
+                            NodeEvent::Write(r) => {
+                                let Some(ControllerEvent::Write(a, p, v)) = ctrl_event.take()
+                                else {
+                                    bail!("Expected write from controller")
+                                };
+                                println!("Write ok {v:?} to {p:?}@{a:?} => {r:?}");
+                            }
+                            NodeEvent::Read(Ok(val)) => {
+                                let Some(ControllerEvent::Read(a, p)) = ctrl_event.take() else {
+                                    bail!("Expected read from controller")
+                                };
+                                println!("Read {p:?}@{a:?} => {val:?}");
+                            }
+                            NodeEvent::UnexpectedTransmission => {
+                                println!("Unexpected data on node tx channel {consumed:?}");
+                                continue 'next_packet;
+                            }
                             _ => {}
                         }
-                        pkt_iter.next();
+                    } else {
+                        println!("Not enough data in node ch packet.");
+                        continue 'next_packet;
                     }
-                    continue;
                 }
-                if data.is_empty() {
-                    return Ok(());
-                }
-                token = r.receive_data(data.as_ref());
             }
-            NodeState::SendData(s) => {
-                token = s.data_sent();
-            }
-            NodeState::ReadParameter(r) => {
-                let resp = receive_node_response::<Value>(
-                    ctrl.read_parameter(r.address(), r.parameter()),
-                    pkt_iter,
-                );
-                println!(
-                    " Read {:?}@{:?} => {resp:?}",
-                    // pkt.time,
-                    r.parameter(),
-                    r.address()
-                );
-                token = r.send_read_failed();
-            }
-            NodeState::WriteParameter(w) => {
-                let resp = receive_node_response::<_>(
-                    ctrl.write_parameter(w.address(), w.parameter(), w.value()),
-                    pkt_iter,
-                );
-                println!(
-                    " Write {:?} to {:?}@{:?} => {resp:?}",
-                    // pkt.time,
-                    w.value(),
-                    w.parameter(),
-                    w.address()
-                );
-                token = match resp {
-                    Ok((_time, ())) => w.write_ok(),
-                    Err(_) => w.write_error(),
-                };
-            }
-        };
-    }
-}
-
-fn receive_node_response<Response>(
-    mut recv: impl SendData<Response = Response>,
-    pkt_iter: &mut Peekable<impl Iterator<Item = Result<SerialPacket>>>,
-) -> Result<(DateTime<Utc>, Response)> {
-    let recv = recv.data_sent();
-
-    if matches!(
-        pkt_iter.peek(),
-        Some(Ok(SerialPacket {
-            ch: UartTxChannel::Ctrl,
-            ..
-        }))
-    ) {
-        bail!("Bus controller timed out")
-    }
-    match pkt_iter.next() {
-        Some(Ok(pkt)) => Ok((
-            pkt.time,
-            recv.receive_data(pkt.data.as_ref())
-                .context("Not enough data in packet")??,
-        )),
-        Some(Err(err)) => Err(err),
-        None => bail!("No more packets."),
+        }
     }
 }
 
